@@ -75,9 +75,14 @@ GHOSTWRITER_PAGINATION_LIMIT=50
 | `GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID` | ❌       | —       | Default project type for new projects             |
 | `GHOSTWRITER_DEFAULT_SEVERITY_ID`     | ❌       | —       | Default severity for new findings                 |
 | `GHOSTWRITER_PAGINATION_LIMIT`        | ❌       | `50`    | Max results per search query                      |
+| `GHOSTWRITER_TLS_INSECURE`            | ❌       | `0`     | Disable TLS verification (last resort, insecure)  |
 
 > **TLS Note:** Certificate verification is enabled by default. If Ghostwriter uses a
-> self-signed certificate, add the CA to your system trust store (recommended).
+> self-signed certificate, add the CA to your system trust store (recommended). If the
+> certificate cannot pass hostname checks (for example a bare IP with no
+> `subjectAltName`), set `GHOSTWRITER_TLS_INSECURE=1` as an escape hatch: traffic stays
+> encrypted but the server is no longer authenticated, so a man-in-the-middle cannot be
+> detected. A warning is logged on every client start.
 
 ---
 
@@ -211,8 +216,14 @@ Environment variables
 - `GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID`: Optional default project type id used by helpers.
 - `GHOSTWRITER_DEFAULT_SEVERITY_ID`: Optional default severity id for creating findings.
 - `GHOSTWRITER_PAGINATION_LIMIT`: Default pagination limit for list queries (default 50).
+- `GHOSTWRITER_TLS_INSECURE`: Set to `1` to disable TLS certificate verification (default off).
 
-Note: TLS certificate verification is always enabled. If you run Ghostwriter on a host with a self-signed certificate, add its CA to your system trust store (recommended) — there is no option to disable verification.
+TLS certificate verification is enabled by default. If you run Ghostwriter behind a
+self-signed certificate, add its CA to your system trust store, or serve it from a
+hostname covered by the certificate's `subjectAltName` (a certificate with no SAN at all
+cannot pass verification for an IP address). Only when neither is possible, set
+`GHOSTWRITER_TLS_INSECURE=1`: the connection stays encrypted, but the server is not
+authenticated, and a warning is logged on every client start. Leave it unset in normal use.
 
 How to run
 

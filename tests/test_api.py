@@ -96,6 +96,45 @@ class TestTransport(ApiTestCase):
             await gw.search_findings("x")
 
 
+class TestTlsInsecure(ApiTestCase):
+    def test_disabled_by_default(self):
+        self.assertFalse(gw.Settings.from_env({}).tls_insecure)
+
+    async def test_default_builds_a_verifying_transport(self):
+        with mock.patch.object(gw.httpx2, "AsyncHTTPTransport") as transport:
+            with mock.patch.object(gw.httpx2, "AsyncClient"):
+                gw._get_client()
+        self.assertIs(transport.call_args.kwargs["verify"], True)
+
+    def test_truthy_values_enable_it(self):
+        for raw in ("1", "true", "TRUE", "Yes", "on"):
+            with self.subTest(raw=raw):
+                self.assertTrue(
+                    gw.Settings.from_env({"GHOSTWRITER_TLS_INSECURE": raw}).tls_insecure
+                )
+
+    def test_falsy_values_keep_it_off(self):
+        for raw in ("0", "false", "No", "off"):
+            with self.subTest(raw=raw):
+                self.assertFalse(
+                    gw.Settings.from_env({"GHOSTWRITER_TLS_INSECURE": raw}).tls_insecure
+                )
+
+    def test_unrecognised_value_is_a_config_error(self):
+        with self.assertRaises(gw.GhostwriterConfigError):
+            gw.Settings.from_env({"GHOSTWRITER_TLS_INSECURE": "maybe"})
+
+    async def test_flag_disables_verification_and_warns_loudly(self):
+        with mock.patch.dict(os.environ, {"GHOSTWRITER_TLS_INSECURE": "1"}):
+            with mock.patch.object(gw.httpx2, "AsyncHTTPTransport") as transport:
+                with mock.patch.object(gw.httpx2, "AsyncClient"):
+                    with self.assertLogs("ghostwriter_api", level="WARNING") as logs:
+                        gw._get_client()
+        self.assertIs(transport.call_args.kwargs["verify"], False)
+        self.assertEqual(transport.call_args.kwargs["retries"], gw._TRANSPORT_RETRIES)
+        self.assertIn("GHOSTWRITER_TLS_INSECURE", "\n".join(logs.output))
+
+
 class TestPagination(ApiTestCase):
     async def test_search_uses_configured_limit(self):
         self.queue({"data": {"finding": []}})

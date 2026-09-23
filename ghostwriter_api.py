@@ -8,9 +8,11 @@ This module owns all network access to Ghostwriter and provides:
 * input validation for identifiers, dates and text fields;
 * a bounded result size for every list query.
 
-TLS certificate verification is always enabled. If Ghostwriter uses a
-self-signed certificate, add its CA to the system trust store instead of
-disabling verification.
+TLS certificate verification is enabled by default and should stay that way: a
+self-signed certificate belongs in the system trust store (or in a CA bundle).
+As a last-resort escape hatch for hosts whose certificate has no usable
+``subjectAltName``, ``GHOSTWRITER_TLS_INSECURE=1`` disables verification and
+logs a loud warning. See ``GHOSTWRITER_TLS_INSECURE`` in ``.env.example``.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ load_dotenv()
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_PAGINATION_LIMIT = 50
+_BOOL_TRUE = frozenset({"1", "true", "yes", "on"})
+_BOOL_FALSE = frozenset({"0", "false", "no", "off"})
 # Retries apply to connection-establishment failures only (never to a request
 # that already reached the server), so mutations cannot be duplicated.
 _TRANSPORT_RETRIES = 2
@@ -66,6 +70,7 @@ class Settings:
     pagination_limit: int
     default_project_type_id: int | None
     default_severity_id: int | None
+    tls_insecure: bool
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
@@ -89,6 +94,7 @@ class Settings:
             default_severity_id=_parse_optional_int(
                 env.get("GHOSTWRITER_DEFAULT_SEVERITY_ID")
             ),
+            tls_insecure=_parse_bool(env.get("GHOSTWRITER_TLS_INSECURE")),
         )
 
 
@@ -112,6 +118,21 @@ def _parse_int(raw: str | None, default: int) -> int:
         raise GhostwriterConfigError(
             f"Expected an integer environment value, got {raw!r}"
         ) from exc
+
+
+def _parse_bool(raw: str | None, *, default: bool = False) -> bool:
+    """Parse a boolean flag, accepting the usual truthy/falsy spellings."""
+    if raw in (None, ""):
+        return default
+    value = raw.strip().lower()
+    if value in _BOOL_TRUE:
+        return True
+    if value in _BOOL_FALSE:
+        return False
+    raise GhostwriterConfigError(
+        "Expected a boolean environment value "
+        f"(1/0, true/false, yes/no, on/off), got {raw!r}"
+    )
 
 
 def _parse_optional_int(raw: str | None) -> int | None:
@@ -145,10 +166,28 @@ _client: httpx2.AsyncClient | None = None
 def _get_client() -> httpx2.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        transport = _transport or httpx2.AsyncHTTPTransport(retries=_TRANSPORT_RETRIES)
+        settings = get_settings()
+        if _transport is not None:
+            transport = _transport  # test/embedding transport owns its own TLS setup
+        else:
+            # ``verify`` belongs on the transport: an explicit ``transport=`` wins
+            # over the equivalent ``AsyncClient`` argument, so setting it there
+            # would silently do nothing.
+            transport = httpx2.AsyncHTTPTransport(
+                retries=_TRANSPORT_RETRIES, verify=not settings.tls_insecure
+            )
+        if settings.tls_insecure:
+            logger.warning(
+                "GHOSTWRITER_TLS_INSECURE is enabled: TLS certificate verification "
+                "is DISABLED for %s. Traffic stays encrypted, but the server is no "
+                "longer authenticated, so a man-in-the-middle cannot be detected. "
+                "Give the server certificate a valid subjectAltName and unset this "
+                "flag.",
+                settings.graphql_url,
+            )
         _client = httpx2.AsyncClient(
             transport=transport,
-            timeout=httpx2.Timeout(get_settings().request_timeout),
+            timeout=httpx2.Timeout(settings.request_timeout),
         )
     return _client
 
