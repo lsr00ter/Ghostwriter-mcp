@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghostwriter-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server exposing the Ghostwriter GraphQL API for pentest report management"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,13 +15,14 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Security",
 ]
 dependencies = [
-  "httpx>=0.27",
+  "httpx2>=2.5",
   "python-dotenv>=1.0",
-  # The server uses the FastMCP API that was renamed in mcp 2.x, so v1 is required.
-  "mcp[cli]>=1.10,<2",
+  # mcp 2.x renamed FastMCP to MCPServer; this server targets that API.
+  "mcp[cli]>=2,<3",
 ]
 
 [project.optional-dependencies]

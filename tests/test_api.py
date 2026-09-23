@@ -1,6 +1,6 @@
 """Tests for the low-level Ghostwriter API client.
 
-Uses ``httpx.MockTransport`` so no network access or Ghostwriter instance is
+Uses ``httpx2.MockTransport`` so no network access or Ghostwriter instance is
 required. Run with ``python -m unittest discover -s tests -v``.
 """
 
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
+import httpx2
 
 import ghostwriter_api as gw
 
@@ -38,19 +38,19 @@ class ApiTestCase(unittest.IsolatedAsyncioTestCase):
         """Queue JSON payloads returned in order for each request made."""
         responses = list(payloads)
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             self.requests.append(request)
             payload = responses.pop(0) if responses else {}
-            return httpx.Response(status_code, json=payload)
+            return httpx2.Response(status_code, json=payload)
 
-        gw.set_transport(httpx.MockTransport(handler))
+        gw.set_transport(httpx2.MockTransport(handler))
 
     def queue_raw(self, body: str, status_code=200, headers=None):
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             self.requests.append(request)
-            return httpx.Response(status_code, text=body, headers=headers or {})
+            return httpx2.Response(status_code, text=body, headers=headers or {})
 
-        gw.set_transport(httpx.MockTransport(handler))
+        gw.set_transport(httpx2.MockTransport(handler))
 
     def last_body(self) -> dict:
         return json.loads(self.requests[-1].content)
@@ -62,7 +62,7 @@ class TestTransport(ApiTestCase):
         result = await gw.search_findings("acme")
         self.assertEqual(result, {"data": {"ok": True}})
         request = self.requests[0]
-        self.assertEqual(request.url, httpx.URL(ENV["GHOSTWRITER_GRAPHQL_URL"]))
+        self.assertEqual(request.url, httpx2.URL(ENV["GHOSTWRITER_GRAPHQL_URL"]))
         self.assertEqual(request.headers["authorization"], "Bearer test-token")
         self.assertEqual(request.headers["content-type"], "application/json")
 

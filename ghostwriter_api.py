@@ -3,7 +3,7 @@
 This module owns all network access to Ghostwriter and provides:
 
 * lazy, environment-driven configuration via :func:`get_settings`;
-* a shared ``httpx.AsyncClient`` (connection pooling + safe connection retries);
+* a shared ``httpx2.AsyncClient`` (connection pooling + safe connection retries);
 * typed exceptions so MCP tools can surface failures as protocol errors;
 * input validation for identifiers, dates and text fields;
 * a bounded result size for every list query.
@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
+import httpx2
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -138,17 +138,17 @@ def get_settings() -> Settings:
 # --------------------------------------------------------------------------- #
 # HTTP client
 # --------------------------------------------------------------------------- #
-_transport: httpx.AsyncBaseTransport | None = None
-_client: httpx.AsyncClient | None = None
+_transport: httpx2.AsyncBaseTransport | None = None
+_client: httpx2.AsyncClient | None = None
 
 
-def _get_client() -> httpx.AsyncClient:
+def _get_client() -> httpx2.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        transport = _transport or httpx.AsyncHTTPTransport(retries=_TRANSPORT_RETRIES)
-        _client = httpx.AsyncClient(
+        transport = _transport or httpx2.AsyncHTTPTransport(retries=_TRANSPORT_RETRIES)
+        _client = httpx2.AsyncClient(
             transport=transport,
-            timeout=httpx.Timeout(get_settings().request_timeout),
+            timeout=httpx2.Timeout(get_settings().request_timeout),
         )
     return _client
 
@@ -161,7 +161,7 @@ async def close_client() -> None:
         await client.aclose()
 
 
-def set_transport(transport: httpx.AsyncBaseTransport | None) -> None:
+def set_transport(transport: httpx2.AsyncBaseTransport | None) -> None:
     """Testing/embedding hook: replace the HTTP transport and drop the cached client."""
     global _transport, _client
     _transport = transport
@@ -193,7 +193,7 @@ async def _post(
             json={"query": query, "variables": variables or {}},
             timeout=request_timeout,
         )
-    except httpx.RequestError as exc:
+    except httpx2.RequestError as exc:
         raise GhostwriterError(
             f"Network error calling Ghostwriter GraphQL: {exc}"
         ) from exc

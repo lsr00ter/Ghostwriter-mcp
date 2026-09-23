@@ -11,10 +11,12 @@ import argparse
 import contextlib
 import logging
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import ghostwriter_api as gw
@@ -75,7 +77,7 @@ DESTRUCTIVE_WRITE = ToolAnnotations(
 
 
 @contextlib.asynccontextmanager
-async def lifespan(_server: FastMCP):
+async def lifespan(_server: MCPServer):
     """Release the shared HTTP client when the server shuts down."""
     try:
         yield {}
@@ -83,8 +85,18 @@ async def lifespan(_server: FastMCP):
         await gw.close_client()
 
 
-server = FastMCP(
+def _server_version() -> str:
+    """Report the installed package version, or a marker for a source checkout."""
+    try:
+        return _package_version("ghostwriter-mcp")
+    except PackageNotFoundError:
+        return "0.0.0+source"
+
+
+server = MCPServer(
     "GhostwriterMCP",
+    title="Ghostwriter",
+    version=_server_version(),
     instructions=SERVER_INSTRUCTIONS.strip(),
     lifespan=lifespan,
 )
@@ -739,10 +751,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.transport == "sse":
-        server.settings.host = args.host
-        server.settings.port = args.port
         logger.info("Starting Ghostwriter MCP server (SSE) on %s:%s", args.host, args.port)
-        server.run(transport="sse")
+        server.run(transport="sse", host=args.host, port=args.port)
     else:
         logger.info("Starting Ghostwriter MCP server (stdio)")
         server.run(transport="stdio")

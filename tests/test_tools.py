@@ -1,6 +1,6 @@
 """Tests for the MCP tool layer.
 
-The decorated functions are still plain callables (FastMCP's ``@tool``
+The decorated functions are still plain callables (MCPServer's ``@tool``
 returns the original function), so they can be invoked directly.
 """
 
@@ -9,8 +9,8 @@ import os
 import unittest
 from unittest import mock
 
-import httpx
-from mcp.server.fastmcp.exceptions import ToolError
+import httpx2
+from mcp.server.mcpserver.exceptions import ToolError
 
 import ghostwriter_api as gw
 import main
@@ -36,12 +36,12 @@ class ToolTestCase(unittest.IsolatedAsyncioTestCase):
     def queue(self, *payloads, status_code=200):
         responses = list(payloads)
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             self.requests.append(request)
             payload = responses.pop(0) if responses else {}
-            return httpx.Response(status_code, json=payload)
+            return httpx2.Response(status_code, json=payload)
 
-        gw.set_transport(httpx.MockTransport(handler))
+        gw.set_transport(httpx2.MockTransport(handler))
 
 
 class TestToolErrorHandling(ToolTestCase):

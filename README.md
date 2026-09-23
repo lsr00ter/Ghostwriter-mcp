@@ -43,8 +43,8 @@ For development (editable install with tests and linter):
 pip install -e ".[dev]"
 ```
 
-> Requires Python 3.10+. The server targets the `mcp` 1.x API, so `pyproject.toml`
-> pins `mcp[cli]>=1.10,<2`.
+> Requires Python 3.10+. The server targets the `mcp` 2.x API (`MCPServer`), so
+> `pyproject.toml` pins `mcp[cli]>=2,<3`. GraphQL calls use `httpx2`.
 
 ---
 
@@ -100,7 +100,7 @@ python main.py --transport sse --host 0.0.0.0 --port 8009
 
 ### All CLI options
 
-```
+```bash
 usage: main.py [-h] [--transport {stdio,sse}] [--host HOST] [--port PORT]
 
 options:
@@ -165,7 +165,7 @@ successful result containing an `error` key.
 When creating a full engagement report from scratch, follow this order — each step
 returns an ID needed by the next:
 
-```
+```workflow
 generate_ghostwriter_codename
         ↓
 create_ghostwriter_client  → clientId
@@ -216,7 +216,7 @@ Note: TLS certificate verification is always enabled. If you run Ghostwriter on 
 
 How to run
 
-1. Create a virtualenv and install dependencies (add `httpx`, `python-dotenv` etc. to the requirements):
+1. Create a virtualenv and install dependencies (add `httpx2`, `python-dotenv` etc. to the requirements):
 
 ```bash
 python3 -m venv .venv
@@ -224,9 +224,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. Populate a `.env` file with `GHOSTWRITER_GRAPHQL_URL` and `GHOSTWRITER_API_TOKEN`.
+1. Populate a `.env` file with `GHOSTWRITER_GRAPHQL_URL` and `GHOSTWRITER_API_TOKEN`.
 
-3. Start the MCP server (example uses FastMCP settings in `main.py`):
+2. Start the MCP server (the CLI entry point is in `main.py`):
 
 ```bash
 python main.py
@@ -239,7 +239,7 @@ ghostwriter-mcp --transport stdio
 ## Development
 
 Run the test suite (no network or Ghostwriter instance required — HTTP is mocked
-with `httpx.MockTransport`):
+with `httpx2.MockTransport`):
 
 ```bash
 python -m unittest discover -s tests -v
@@ -251,7 +251,7 @@ Lint with [ruff](https://docs.astral.sh/ruff/):
 ruff check .
 ```
 
-CI (`.github/workflows/ci.yml`) runs both across Python 3.10–3.13.
+CI (`.github/workflows/ci.yml`) runs both across Python 3.10–3.14.
 
 Layout:
 
@@ -265,7 +265,8 @@ Layout:
 
 ---
 
-# Context for the agent
+## Context for the agent
+
 Design notes and suggestions for the AI mapping workflow
 
 Your goal: have an AI agent inspect an HTTP request+response and do the following automatically:
