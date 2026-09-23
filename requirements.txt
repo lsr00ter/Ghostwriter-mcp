@@ -1,4 +1,3 @@
-httpx
-python-dotenv
-fastmcp
-mcp[cli]
+httpx>=0.27
+python-dotenv>=1.0
+mcp[cli]>=1.10,<2

@@ -29,6 +29,7 @@ clients, projects, reports and findings for penetration testing engagements.
 ## Installation
 
 ```bash
+# Runtime only
 git clone <repo-url>
 cd copilot-try-ghostwriter
 python3 -m venv .venv
@@ -36,11 +37,21 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+For development (editable install with tests and linter):
+
+```bash
+pip install -e ".[dev]"
+```
+
+> Requires Python 3.10+. The server targets the `mcp` 1.x API, so `pyproject.toml`
+> pins `mcp[cli]>=1.10,<2`.
+
 ---
 
 ## Configuration
 
-Create a `.env` file in the project root (or export the variables in your shell):
+Create a `.env` file in the project root (or export the variables in your shell). A ready-to-copy
+template is provided in [`.env.example`](.env.example):
 
 ```env
 # Required
@@ -123,24 +134,29 @@ Add the following to your `claude_desktop_config.json`:
 
 ## Available Tools
 
-| Tool                            | Description                                      |
-| ------------------------------- | ------------------------------------------------ |
-| `search_ghostwriter_findings`   | Search the findings library by title             |
-| `search_ghostwriter_reports`    | Search reports by title                          |
-| `search_ghostwriter_clients`    | Search clients by name, codename, or shortName   |
-| `search_ghostwriter_projects`   | Search projects by codename or client name       |
-| `get_ghostwriter_client_by_id`  | Fetch a client by ID                             |
-| `get_ghostwriter_project_by_id` | Fetch a project by ID                            |
-| `get_ghostwriter_report_by_id`  | Fetch a report by ID                             |
-| `generate_ghostwriter_codename` | Generate a unique codename                       |
-| `create_ghostwriter_client`     | Create a new client                              |
-| `create_ghostwriter_project`    | Create a new project (requires `clientId`)       |
-| `create_ghostwriter_report`     | Create a new report (requires `projectId`)       |
-| `create_ghostwriter_finding`    | Add a finding to the library                     |
-| `attach_finding_to_report`      | Attach a library finding to a report             |
-| `list_report_finding`           | List all findings attached to a report           |
-| `update_report_finding`         | Update replication steps / affected entities     |
-| `explain_workflow`              | Get a complete guide on the recommended workflow |
+| Tool                            | Kind        | Description                                      |
+| ------------------------------- | ----------- | ------------------------------------------------ |
+| `search_ghostwriter_findings`   | read        | Search the findings library by title             |
+| `search_ghostwriter_reports`    | read        | Search reports by title                          |
+| `search_ghostwriter_clients`    | read        | Search clients by name, codename, or shortName   |
+| `search_ghostwriter_projects`   | read        | Search projects by codename or client name       |
+| `get_ghostwriter_client_by_id`  | read        | Fetch a client by ID                             |
+| `get_ghostwriter_project_by_id` | read        | Fetch a project by ID                            |
+| `get_ghostwriter_report_by_id`  | read        | Fetch a report by ID                             |
+| `generate_ghostwriter_codename` | write       | Generate a unique codename                       |
+| `create_ghostwriter_client`     | write       | Create a new client                              |
+| `create_ghostwriter_project`    | write       | Create a new project (requires `clientId`)       |
+| `create_ghostwriter_report`     | write       | Create a new report (requires `projectId`)       |
+| `create_ghostwriter_finding`    | write       | Add a finding to the library                     |
+| `attach_finding_to_report`      | write       | Attach a library finding to a report             |
+| `list_report_finding`           | read        | List all findings attached to a report           |
+| `update_report_finding`         | destructive | Update replication steps / affected entities     |
+| `explain_workflow`              | read        | Get a complete guide on the recommended workflow |
+
+The **kind** column mirrors the MCP tool annotations the server publishes
+(`readOnlyHint` / `destructiveHint`). All list tools respect `GHOSTWRITER_PAGINATION_LIMIT`,
+and tool failures are returned as MCP errors (`isError: true`) rather than as a
+successful result containing an `error` key.
 
 ---
 
@@ -196,10 +212,7 @@ Environment variables
 - `GHOSTWRITER_DEFAULT_SEVERITY_ID`: Optional default severity id for creating findings.
 - `GHOSTWRITER_PAGINATION_LIMIT`: Default pagination limit for list queries (default 50).
 
-Note: TLS certificate verification is enabled by default. If you run Ghostwriter on a host with a self-signed certificate, you can either:
-
-- Add the CA to your system trust store (recommended), or
-- Run the MCP server in an environment where certificate verification can be disabled (not recommended for production). The library intentionally defaults to verifying certificates.
+Note: TLS certificate verification is always enabled. If you run Ghostwriter on a host with a self-signed certificate, add its CA to your system trust store (recommended) — there is no option to disable verification.
 
 How to run
 
@@ -217,7 +230,41 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
+# or, after an install:
+ghostwriter-mcp --transport stdio
 ```
+
+---
+
+## Development
+
+Run the test suite (no network or Ghostwriter instance required — HTTP is mocked
+with `httpx.MockTransport`):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Lint with [ruff](https://docs.astral.sh/ruff/):
+
+```bash
+ruff check .
+```
+
+CI (`.github/workflows/ci.yml`) runs both across Python 3.10–3.13.
+
+Layout:
+
+- `ghostwriter_api.py` — configuration, shared HTTP client, validation, and GraphQL calls.
+- `main.py` — MCP tool definitions, server instructions, and the CLI entry point.
+- `tests/` — unit tests for the API client and the tool layer.
+- `tests/schema_fixtures.json` — the `*_insert_input` field sets the write tools must match,
+  extracted from Ghostwriter's `DOCS/schema.graphql`. The schema-conformance tests assert
+  every payload key is a real field, so a typo (e.g. `cvssScore` vs `cvss_score`) fails CI
+  instead of failing at runtime. Refresh it when targeting a newer Ghostwriter release.
+
+---
+
 # Context for the agent
 Design notes and suggestions for the AI mapping workflow
 
