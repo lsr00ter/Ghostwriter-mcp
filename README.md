@@ -192,6 +192,19 @@ Claude Desktop has no project scope, so it needs absolute paths in
 
 ---
 
+## Agent skill
+
+`skills/ghostwriter/SKILL.md` teaches an AI agent how to use both this server and
+the Ghostwriter platform behind it: the client -> project -> report -> finding
+hierarchy, the library-versus-report-copy rule, the fact that rich text fields are
+rendered through Jinja2, delete cascades, and which parts of Ghostwriter these
+tools deliberately do not cover. `.claude/skills/ghostwriter` symlinks to it so
+Claude Code discovers it in this project; point other agents at the file directly.
+
+It lives in the repo so it versions alongside the tools it documents.
+
+---
+
 ## Available Tools
 
 | Tool                            | Kind        | Description                                      |
