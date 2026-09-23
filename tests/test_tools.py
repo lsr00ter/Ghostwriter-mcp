@@ -207,5 +207,31 @@ class TestWorkflowTool(ToolTestCase):
         self.assertTrue(result["workflow_options"]["create_everything_new"])
 
 
+class TestUpdateTool(ToolTestCase):
+    async def test_zero_rows_raises_tool_error(self):
+        """A silent no-op must not be reported as a successful update."""
+        self.queue({"data": {"update_reportedFinding": {"affected_rows": 0, "returning": []}}})
+        with self.assertRaises(ToolError):
+            await main.update_report_finding_tool(999999, replicationSteps="steps")
+
+    async def test_successful_update_returns_the_row(self):
+        self.queue(
+            {
+                "data": {
+                    "update_reportedFinding": {
+                        "affected_rows": 1,
+                        "returning": [{"id": 6, "replication_steps": "x", "affectedEntities": "h"}],
+                    }
+                }
+            }
+        )
+        result = await main.update_report_finding_tool(
+            6, replicationSteps="x", affectedEntities="h"
+        )
+        self.assertEqual(result["affected_rows"], 1)
+        self.assertEqual(result["returning"][0]["replication_steps"], "x")
+        self.assertEqual(result["returning"][0]["affectedEntities"], "h")
+
+
 if __name__ == "__main__":
     unittest.main()

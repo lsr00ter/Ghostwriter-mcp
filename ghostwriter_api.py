@@ -60,6 +60,10 @@ class GhostwriterGraphQLError(GhostwriterError):
     """Ghostwriter returned a GraphQL ``errors`` payload."""
 
 
+class GhostwriterNotFoundError(GhostwriterError):
+    """A mutation matched no rows, so it silently changed nothing."""
+
+
 @dataclass(frozen=True)
 class Settings:
     """Resolved runtime configuration."""
@@ -742,4 +746,14 @@ async def update_report_finding(
       }}
     }}
     """
-    return await _post(query, variables)
+    result = await _post(query, variables)
+
+    # Hasura treats "no rows matched" as success, so a typo'd id would look like a
+    # successful update. ``_set`` always changes the row, so a matched id reports
+    # affected_rows >= 1.
+    updated = (result.get("data") or {}).get("update_reportedFinding") or {}
+    if not updated.get("affected_rows"):
+        raise GhostwriterNotFoundError(
+            f"No reported finding with id {variables['reportedFindingId']}."
+        )
+    return result

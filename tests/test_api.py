@@ -356,6 +356,13 @@ class TestSchemaConformance(ApiTestCase):
         keys = re.findall(r"(\w+)\s*:", set_block)
         self.assert_keys_valid(keys, "reportedFinding_set_input")
 
+    async def test_update_report_finding_missing_row_raises(self):
+        """Hasura reports success for a zero-row update, so we must not."""
+        self.queue({"data": {"update_reportedFinding": {"affected_rows": 0, "returning": []}}})
+        with self.assertRaises(gw.GhostwriterNotFoundError) as ctx:
+            await gw.update_report_finding(999999, replicationSteps="a")
+        self.assertIn("999999", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
