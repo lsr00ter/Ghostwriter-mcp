@@ -757,3 +757,28 @@ async def update_report_finding(
             f"No reported finding with id {variables['reportedFindingId']}."
         )
     return result
+
+
+async def list_lookups():
+    """Return the lookup tables a caller needs to pick valid ids.
+
+    ``projectTypeId``, ``findingTypeId`` and ``severityId`` are seeded per
+    deployment, so their ids cannot be hardcoded.
+    """
+    query = """
+    query GhostwriterLookups {
+      projectType(order_by: {id: asc}) {
+        id
+        projectType
+      }
+      findingType(order_by: {id: asc}) {
+        id
+        findingType
+      }
+      findingSeverity(order_by: {id: asc}) {
+        id
+        severity
+      }
+    }
+    """
+    return await _post(query)

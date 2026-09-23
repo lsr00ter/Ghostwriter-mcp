@@ -31,6 +31,7 @@ from ghostwriter_api import (
     get_client_by_id,
     get_project_by_id,
     get_report_by_id,
+    list_lookups,
     list_report_findings,
     search_clients,
     search_findings,
@@ -50,12 +51,19 @@ SERVER_INSTRUCTIONS = """
 Ghostwriter MCP server for penetration-testing report management.
 
 WORKFLOW DEPENDENCIES (each step returns the ID needed by the next):
-1. generate_ghostwriter_codename            -> codename
-2. create_ghostwriter_client                -> clientId
-3. create_ghostwriter_project  (clientId)   -> projectId
-4. create_ghostwriter_report   (projectId)  -> reportId
-5. attach_finding_to_report    (reportId)   -> reportedFindingId
+1. generate_ghostwriter_codename                     -> codename
+2. create_ghostwriter_client                         -> clientId
+3. create_ghostwriter_project  (clientId,
+                                projectTypeId)       -> projectId
+4. create_ghostwriter_report   (projectId)           -> reportId
+5. attach_finding_to_report    (reportId, finding)   -> reportedFindingId
 6. update_report_finding       (reportedFindingId)
+
+Call list_ghostwriter_lookups first when you need valid projectTypeId,
+findingTypeId or severityId values: those lookup tables are seeded per
+deployment, so the ids are not fixed. create_ghostwriter_project requires
+projectTypeId unless GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID is configured, and
+create_ghostwriter_finding likewise accepts findingTypeId and severityId.
 
 Search before creating to avoid duplicates (search_ghostwriter_clients,
 search_ghostwriter_projects, search_ghostwriter_reports). Call explain_workflow
@@ -114,6 +122,46 @@ def _tool_error(tool_name: str, exc: Exception) -> ToolError:
 def _truncate(text: Any, length: int = 100) -> str:
     value = "" if text is None else str(text)
     return value if len(value) <= length else f"{value[:length]}..."
+
+
+@server.tool(
+    name="list_ghostwriter_lookups",
+    title="List lookup values",
+    description="""List the lookup values needed to fill in other tools.
+
+    USE THIS BEFORE: create_ghostwriter_project (for projectTypeId) and
+    create_ghostwriter_finding (for findingTypeId and severityId).
+
+    These ids are seeded per deployment and are NOT fixed numbers, so call this
+    instead of guessing. The server has no other way to discover them, and
+    create_ghostwriter_project fails without a projectTypeId unless
+    GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID is set.
+
+    RETURNS: projectTypes [{id, name}], findingTypes [{id, name}],
+    severities [{id, name}]
+    """,
+    annotations=READ_ONLY,
+)
+async def list_ghostwriter_lookups() -> dict[str, list[dict[str, Any]]]:
+    try:
+        result = await list_lookups()
+        data = result.get("data") or {}
+        return {
+            "projectTypes": [
+                {"id": row["id"], "name": row["projectType"]}
+                for row in data.get("projectType") or []
+            ],
+            "findingTypes": [
+                {"id": row["id"], "name": row["findingType"]}
+                for row in data.get("findingType") or []
+            ],
+            "severities": [
+                {"id": row["id"], "name": row["severity"]}
+                for row in data.get("findingSeverity") or []
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("list_ghostwriter_lookups", exc) from exc
 
 
 @server.tool(
@@ -412,6 +460,7 @@ async def create_ghostwriter_client(
       deployment-specific: query the `projectType` table to list them (a stock
       install ships Red Team, Penetration Test, Phishing Assessment and
       Web Application Assessment).
+      TIP: call list_ghostwriter_lookups to get the valid ids for this deployment.
     - 'startDate' and 'endDate' are ISO dates (YYYY-MM-DD) and default to today
     """,
     annotations=WRITE,
@@ -638,36 +687,58 @@ async def explain_workflow() -> dict[str, Any]:
             "create_everything_new": [
                 {
                     "step": 1,
+                    "tool": "list_ghostwriter_lookups",
+                    "purpose": "Get valid projectTypeId / findingTypeId / severityId values",
+                    "note": "Lookup ids are seeded per deployment, so they cannot be guessed",
+                    "returns": "projectTypes, findingTypes, severities",
+                },
+                {
+                    "step": 2,
                     "tool": "generate_ghostwriter_codename",
                     "purpose": "Generate a unique codename",
                     "returns": "codename (string)",
                 },
                 {
-                    "step": 2,
+                    "step": 3,
                     "tool": "create_ghostwriter_client",
                     "purpose": "Create client organization",
-                    "requires": "codename from step 1",
+                    "requires": "codename from step 2",
                     "returns": "clientId (integer) - SAVE THIS!",
                 },
                 {
-                    "step": 3,
+                    "step": 4,
                     "tool": "create_ghostwriter_project",
                     "purpose": "Create project under client",
-                    "requires": "clientId from step 2",
+                    "requires": "clientId from step 3, projectTypeId from step 1",
                     "returns": "projectId (integer) - SAVE THIS!",
                 },
                 {
-                    "step": 4,
+                    "step": 5,
                     "tool": "create_ghostwriter_report",
                     "purpose": "Create report under project",
-                    "requires": "projectId from step 3",
+                    "requires": "projectId from step 4",
                     "returns": "reportId (integer) - SAVE THIS!",
                 },
                 {
-                    "step": 5,
+                    "step": 6,
+                    "tool": "create_ghostwriter_finding",
+                    "purpose": "Add a finding to the findings library (optional: attach one that exists)",
+                    "requires": "findingTypeId and severityId from step 1",
+                    "returns": "findingId (integer)",
+                },
+                {
+                    "step": 7,
                     "tool": "attach_finding_to_report",
-                    "purpose": "Add findings to the report",
-                    "requires": "reportId from step 4",
+                    "purpose": "Attach a library finding to the report",
+                    "requires": "reportId from step 5, and a finding id or title",
+                    "returns": "reportedFindingId (integer) - SAVE THIS!",
+                },
+                {
+                    "step": 8,
+                    "tool": "update_report_finding",
+                    "purpose": "Set replication steps and affected entities on the report finding",
+                    "requires": "reportedFindingId from step 7",
+                    "note": "Replaces the existing text; it does not append",
                 },
             ],
             "use_existing_entities": [

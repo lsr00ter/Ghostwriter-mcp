@@ -142,6 +142,7 @@ Add the following to your `claude_desktop_config.json`:
 | Tool                            | Kind        | Description                                      |
 | ------------------------------- | ----------- | ------------------------------------------------ |
 | `search_ghostwriter_findings`   | read        | Search the findings library by title             |
+| `list_ghostwriter_lookups`      | read        | List valid project type, finding type, and severity IDs |
 | `search_ghostwriter_reports`    | read        | Search reports by title                          |
 | `search_ghostwriter_clients`    | read        | Search clients by name, codename, or shortName   |
 | `search_ghostwriter_projects`   | read        | Search projects by codename or client name       |
@@ -150,7 +151,7 @@ Add the following to your `claude_desktop_config.json`:
 | `get_ghostwriter_report_by_id`  | read        | Fetch a report by ID                             |
 | `generate_ghostwriter_codename` | write       | Generate a unique codename                       |
 | `create_ghostwriter_client`     | write       | Create a new client                              |
-| `create_ghostwriter_project`    | write       | Create a new project (requires `clientId`)       |
+| `create_ghostwriter_project`    | write       | Create a new project (requires `clientId`, `projectTypeId`) |
 | `create_ghostwriter_report`     | write       | Create a new report (requires `projectId`)       |
 | `create_ghostwriter_finding`    | write       | Add a finding to the library                     |
 | `attach_finding_to_report`      | write       | Attach a library finding to a report             |
@@ -178,18 +179,30 @@ When creating a full engagement report from scratch, follow this order — each 
 returns an ID needed by the next:
 
 ```workflow
+list_ghostwriter_lookups   → projectTypeId, findingTypeId, severityId
+        ↓
 generate_ghostwriter_codename
         ↓
 create_ghostwriter_client  → clientId
         ↓
-create_ghostwriter_project (clientId) → projectId
+create_ghostwriter_project (clientId, projectTypeId) → projectId
         ↓
 create_ghostwriter_report  (projectId) → reportId
         ↓
-attach_finding_to_report   (reportId) → reportedFindingId
+attach_finding_to_report   (reportId, finding) → reportedFindingId
         ↓
 update_report_finding      (reportedFindingId)
 ```
+
+Start with `list_ghostwriter_lookups`: `projectTypeId`, `findingTypeId` and
+`severityId` are seeded per deployment, so they cannot be hardcoded.
+`create_ghostwriter_project` fails without a `projectTypeId` unless
+`GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID` is set.
+
+`attach_finding_to_report` takes either a library finding ID or a title to search
+for, and returns a `reportedFindingId` — the report-specific copy of the finding.
+Pass that, not the library ID, to `update_report_finding`, which **replaces** the
+text rather than appending and errors out if no finding matches the ID.
 
 > **Always search before creating** to avoid duplicates:
 >
@@ -208,8 +221,9 @@ If you only have a `reportId` and need to walk back up the hierarchy:
 ### Project Type IDs
 
 Project type IDs are **deployment-specific** — the `projectType` table is populated
-when Ghostwriter is seeded, so query it (`query { projectType { id projectType } }`)
-rather than assuming fixed numbers. A stock install ships:
+when Ghostwriter is seeded, so call `list_ghostwriter_lookups` (or query
+`query { projectType { id projectType } }`) rather than assuming fixed numbers.
+A stock install ships:
 
 | ID  | Type                        |
 | --- | --------------------------- |
@@ -218,8 +232,9 @@ rather than assuming fixed numbers. A stock install ships:
 | 3   | Phishing Assessment         |
 | 4   | Web Application Assessment  |
 
-Findings likewise reference the `findingType` and `findingSeverity` tables; query them
-the same way before passing `findingTypeId` / `severityId`.
+Findings likewise reference the `findingType` and `findingSeverity` tables;
+`list_ghostwriter_lookups` returns all three in one call, so use it before passing
+`findingTypeId` / `severityId`.
 
 Environment variables
 

@@ -363,6 +363,21 @@ class TestSchemaConformance(ApiTestCase):
             await gw.update_report_finding(999999, replicationSteps="a")
         self.assertIn("999999", str(ctx.exception))
 
+    async def test_list_lookups_returns_all_three_tables(self):
+        self.queue(
+            {
+                "data": {
+                    "projectType": [{"id": 1, "projectType": "Red Team"}],
+                    "findingType": [{"id": 4, "findingType": "Web"}],
+                    "findingSeverity": [{"id": 2, "severity": "Low"}],
+                }
+            }
+        )
+        await gw.list_lookups()
+        query = self.last_body()["query"]
+        for table in ("projectType", "findingType", "findingSeverity"):
+            self.assertIn(table, query)
+
 
 if __name__ == "__main__":
     unittest.main()

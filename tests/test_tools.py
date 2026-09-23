@@ -206,6 +206,56 @@ class TestWorkflowTool(ToolTestCase):
         self.assertIn("workflow_options", result)
         self.assertTrue(result["workflow_options"]["create_everything_new"])
 
+    async def test_workflow_sequence_is_complete_and_ordered(self):
+        """Every dependency the chain needs must be named in the walkthrough.
+
+        projectTypeId is required by create_ghostwriter_project unless the env
+        default is set, so a walkthrough that omits it produces a step that
+        fails for anyone following it literally.
+        """
+        result = await main.explain_workflow()
+        steps = result["workflow_options"]["create_everything_new"]
+        tools = [step["tool"] for step in steps]
+        self.assertEqual(tools[0], "list_ghostwriter_lookups")
+        self.assertEqual(
+            tools[1:],
+            [
+                "generate_ghostwriter_codename",
+                "create_ghostwriter_client",
+                "create_ghostwriter_project",
+                "create_ghostwriter_report",
+                "create_ghostwriter_finding",
+                "attach_finding_to_report",
+                "update_report_finding",
+            ],
+        )
+        project_step = next(s for s in steps if s["tool"] == "create_ghostwriter_project")
+        self.assertIn("projectTypeId", project_step["requires"])
+        attach_step = next(s for s in steps if s["tool"] == "attach_finding_to_report")
+        self.assertIn("finding", attach_step["requires"])
+
+
+class TestLookupTool(ToolTestCase):
+    async def test_lookups_are_flattened_to_name_keys(self):
+        self.queue(
+            {
+                "data": {
+                    "projectType": [{"id": 2, "projectType": "Penetration Test"}],
+                    "findingType": [{"id": 4, "findingType": "Web"}],
+                    "findingSeverity": [{"id": 2, "severity": "Low"}],
+                }
+            }
+        )
+        result = await main.list_ghostwriter_lookups()
+        self.assertEqual(result["projectTypes"], [{"id": 2, "name": "Penetration Test"}])
+        self.assertEqual(result["findingTypes"], [{"id": 4, "name": "Web"}])
+        self.assertEqual(result["severities"], [{"id": 2, "name": "Low"}])
+
+    async def test_missing_lookup_tables_yield_empty_lists(self):
+        self.queue({"data": {}})
+        result = await main.list_ghostwriter_lookups()
+        self.assertEqual(result, {"projectTypes": [], "findingTypes": [], "severities": []})
+
 
 class TestUpdateTool(ToolTestCase):
     async def test_zero_rows_raises_tool_error(self):
