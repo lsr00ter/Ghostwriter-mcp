@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ghostwriter": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["main.py"],
+      "cwd": "."
+    }
+  }
+}

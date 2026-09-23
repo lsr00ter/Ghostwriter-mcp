@@ -1,0 +1,27 @@
+# Project-local Codex configuration.
+#
+# Codex only reads $CODEX_HOME/config.toml and has no project-local discovery,
+# so point CODEX_HOME at this directory when working in this repo:
+#
+#   CODEX_HOME="$PWD/.codex" codex
+#
+# This file intentionally configures nothing but the MCP server, so it layers
+# cleanly over your own settings rather than replacing them. Anything you rely
+# on from ~/.codex/config.toml (model, approval policy, profiles) is NOT
+# inherited while CODEX_HOME points here.
+
+[mcp_servers.ghostwriter]
+command = ".venv/bin/python"
+args = ["main.py"]
+cwd = "."
+
+# The server reads GHOSTWRITER_URL and GHOSTWRITER_API_TOKEN from the .env file
+# in cwd, so no secrets belong in this file. To override a setting per-invocation
+# without touching .env, add it here, e.g.:
+#
+#   env = { GHOSTWRITER_PAGINATION_LIMIT = "100" }
+
+# Generating a codename and creating a client, project, report and finding are
+# all single GraphQL round trips, but a cold start has to import the MCP SDK.
+startup_timeout_sec = 30
+tool_timeout_sec = 120

@@ -118,16 +118,68 @@ options:
 
 ---
 
-## Connecting to Claude Desktop (stdio)
+## Connecting a client
 
-Add the following to your `claude_desktop_config.json`:
+Two project-local configs are checked in, so a client started from this directory
+finds the server with no global setup. Both launch `.venv/bin/python main.py` with
+`cwd` set to the repo, which is what lets the server load `.env` from here.
+
+### Claude Code
+
+`.mcp.json` is picked up automatically when you run `claude` in this directory.
+Project-scoped servers need approval on first use, so expect a prompt (or
+`⏸ Pending approval` in `claude mcp list`) before the tools appear. Verify with:
+
+```bash
+claude mcp list
+```
+
+### Codex
+
+Codex reads MCP servers only from `$CODEX_HOME/config.toml` and has no
+project-local discovery, so point `CODEX_HOME` at `.codex/` in this repo:
+
+```bash
+CODEX_HOME="$PWD/.codex" codex
+CODEX_HOME="$PWD/.codex" codex mcp list   # verify
+```
+
+Be aware of the trade-off: `CODEX_HOME` relocates *all* of Codex's state, not just
+the MCP list. Your `~/.codex` model settings, profiles, and login are not
+inherited, and `codex login` would write `auth.json` into this repo. `.gitignore`
+excludes everything under `.codex/` except `config.toml` so credentials cannot be
+committed, but if you would rather keep one Codex identity, register the server
+globally instead and skip `CODEX_HOME`:
+
+```bash
+codex mcp add ghostwriter -- "$PWD/.venv/bin/python" "$PWD/main.py"
+```
+
+Then add a `cwd` to that entry in `~/.codex/config.toml`, because `codex mcp add`
+cannot set one and the server loads `.env` relative to its working directory:
+
+```toml
+[mcp_servers.ghostwriter]
+command = "/absolute/path/to/Ghostwriter-mcp/.venv/bin/python"
+args = ["/absolute/path/to/Ghostwriter-mcp/main.py"]
+cwd = "/absolute/path/to/Ghostwriter-mcp"
+```
+
+Without it the server starts in whatever directory Codex was launched from, finds
+no `.env`, and every tool fails with "GHOSTWRITER_GRAPHQL_URL ... is not set".
+Passing the settings through `env` instead of `cwd` works too.
+
+### Claude Desktop
+
+Claude Desktop has no project scope, so it needs absolute paths in
+`claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "ghostwriter": {
       "command": "/absolute/path/to/.venv/bin/python",
-      "args": ["/absolute/path/to/copilot-try-ghostwriter/main.py"],
+      "args": ["/absolute/path/to/Ghostwriter-mcp/main.py"],
       "env": {
         "GHOSTWRITER_GRAPHQL_URL": "https://ghostwriter.example.local/v1/graphql",
         "GHOSTWRITER_API_TOKEN": "your_token_here"
