@@ -1,88 +1,155 @@
-# File: main.py
+"""Ghostwriter MCP server.
+
+Exposes Ghostwriter's report-management workflow as MCP tools. Tool failures
+are raised as ``ToolError`` so MCP clients see ``isError: true`` instead of a
+successful result that merely contains an ``error`` key.
+"""
+
+from __future__ import annotations
+
 import argparse
+import contextlib
 import logging
 import sys
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
-from typing import Optional
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
+
+import ghostwriter_api as gw
+from ghostwriter_api import (
+    GhostwriterError,
+    add_finding_to_report,
+    create_client,
+    create_finding,
+    create_project,
+    create_report,
+    generate_codename,
+    get_client_by_id,
+    get_project_by_id,
+    get_report_by_id,
+    list_report_findings,
+    search_clients,
+    search_findings,
+    search_projects,
+    search_reports,
+    update_report_finding,
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=sys.stderr,
 )
-from ghostwriter_api import (
-    search_findings,
-    search_reports,
-    search_clients,
-    search_projects,
-    generate_codename,
-    create_client,
-    create_project,
-    create_report,
-    add_finding_to_report,
-    list_report_findings,
-    update_report_finding,
-    get_client_by_id,
-    get_project_by_id,
-    get_report_by_id,
-    create_finding,
+logger = logging.getLogger("ghostwriter_mcp")
+
+SERVER_INSTRUCTIONS = """
+Ghostwriter MCP server for penetration-testing report management.
+
+WORKFLOW DEPENDENCIES (each step returns the ID needed by the next):
+1. generate_ghostwriter_codename            -> codename
+2. create_ghostwriter_client                -> clientId
+3. create_ghostwriter_project  (clientId)   -> projectId
+4. create_ghostwriter_report   (projectId)  -> reportId
+5. attach_finding_to_report    (reportId)   -> reportedFindingId
+6. update_report_finding       (reportedFindingId)
+
+Search before creating to avoid duplicates (search_ghostwriter_clients,
+search_ghostwriter_projects, search_ghostwriter_reports). Call explain_workflow
+for a full walkthrough, including how to trace an existing report back to its
+project and client.
+"""
+
+# MCP tool annotations. Read-only tools advertise readOnlyHint; write tools
+# distinguish destructive (replaces content) from additive changes.
+READ_ONLY = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
+WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
+)
+DESTRUCTIVE_WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True
 )
 
-server = FastMCP("GhostwriterMCP")
 
-# Add a server-level description that explains the workflow
-server.description = """
-Ghostwriter MCP Server for penetration testing report management.
+@contextlib.asynccontextmanager
+async def lifespan(_server: FastMCP):
+    """Release the shared HTTP client when the server shuts down."""
+    try:
+        yield {}
+    finally:
+        await gw.close_client()
 
-WORKFLOW DEPENDENCIES:
-1. First: create_ghostwriter_client (returns clientId)
-2. Then: create_ghostwriter_project (needs clientId from step 1, returns projectId)
-3. Then: create_ghostwriter_report (needs projectId from step 2, returns reportId)
-4. Finally: attach_finding_to_report (needs reportId from step 3)
 
-Always follow this sequence when creating new reports from scratch.
-"""
+server = FastMCP(
+    "GhostwriterMCP",
+    instructions=SERVER_INSTRUCTIONS.strip(),
+    lifespan=lifespan,
+)
+
+
+def _tool_error(tool_name: str, exc: Exception) -> ToolError:
+    """Log a failure and convert it into an MCP protocol error."""
+    if isinstance(exc, GhostwriterError):
+        logger.warning("%s: %s", tool_name, exc)
+    else:
+        logger.exception("%s: unexpected error", tool_name)
+    return ToolError(str(exc))
+
+
+def _truncate(text: Any, length: int = 100) -> str:
+    value = "" if text is None else str(text)
+    return value if len(value) <= length else f"{value[:length]}..."
 
 
 @server.tool(
     name="search_ghostwriter_findings",
-    description="Search for Ghostwriter findings by title or ID. This gives the findingId back",
+    title="Search findings",
+    description="Search for Ghostwriter findings by title. Returns findingId values.",
+    annotations=READ_ONLY,
 )
-async def search_ghostwriter_findings(search_term: Optional[str] = None):
+async def search_ghostwriter_findings(
+    search_term: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         results = await search_findings(search_term=search_term)
-        findings = results["data"]["finding"]
+        findings = (results.get("data") or {}).get("finding") or []
         return [
             {
-                "id": f["id"],
-                "title": f["title"],
-                "severity": f["severity"]["severity"],
-                "description": f["description"][:100] + "...",
+                "id": f.get("id"),
+                "title": f.get("title") or "",
+                "severity": (f.get("severity") or {}).get("severity") or "Unknown",
+                "description": _truncate(f.get("description")),
             }
             for f in findings
         ]
-    except Exception as e:
-        logging.error("Error searching findings: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001 - converted to a protocol error
+        raise _tool_error("search_ghostwriter_findings", exc) from exc
 
 
 @server.tool(
     name="search_ghostwriter_reports",
-    description="""Search Ghostwriter reports by title or ID.
-    
+    title="Search reports",
+    description="""Search Ghostwriter reports by title.
+
     USE CASE: Find existing reports to work with, or check if a report already exists.
     SEARCH BY: Report title (partial matches supported)
     RETURNS: List of reports with their IDs and projectIds
-    
+
     Example searches:
-    - search_ghostwriter_reports("Q4 Pentest") → finds "Q4 Pentest Report", "Q4 Pentest Final", etc.
-    - search_ghostwriter_reports("Web App") → finds all reports with "Web App" in the title
+    - search_ghostwriter_reports("Q4 Pentest") -> finds "Q4 Pentest Report", "Q4 Pentest Final", etc.
+    - search_ghostwriter_reports("Web App") -> finds all reports with "Web App" in the title
     """,
+    annotations=READ_ONLY,
 )
-async def search_ghostwriter_reports(search_term: Optional[str] = None):
+async def search_ghostwriter_reports(
+    search_term: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         results = await search_reports(search_term=search_term)
-        reports = results["data"]["report"]
+        reports = (results.get("data") or {}).get("report") or []
         return [
             {
                 "id": r["id"],
@@ -92,36 +159,31 @@ async def search_ghostwriter_reports(search_term: Optional[str] = None):
             }
             for r in reports
         ]
-    except Exception as e:
-        logging.error("Error searching reports: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("search_ghostwriter_reports", exc) from exc
 
 
 @server.tool(
     name="search_ghostwriter_clients",
-    description="""Search for existing Ghostwriter clients by name, codename, shortName, or ID.
-    
+    title="Search clients",
+    description="""Search for existing Ghostwriter clients by name, codename, or shortName.
+
     USE CASE: Before creating a new client, search to see if it already exists.
     SEARCH BY: Client name, codename, or shortName (partial matches supported)
     RETURNS: List of clients with their IDs - use the 'id' field as clientId in create_ghostwriter_project
-    
-    REQUIRED FIELDS: Only 'name' and 'codename' are guaranteed to be present
-    OPTIONAL FIELDS: May include shortName, address, note (empty string if not set)
-    
+
     Example searches:
-    - search_ghostwriter_clients("Acme") → finds "Acme Corp", "Acme Industries", etc.
-    - search_ghostwriter_clients("ACME2024") → finds client with codename "ACME2024"
-    
-    Example workflow:
-    1. Search for existing client by name/codename first
-    2. If found: use the returned 'id' as clientId  
-    3. If not found: create new client with create_ghostwriter_client
+    - search_ghostwriter_clients("Acme") -> finds "Acme Corp", "Acme Industries", etc.
+    - search_ghostwriter_clients("ACME2024") -> finds client with codename "ACME2024"
     """,
+    annotations=READ_ONLY,
 )
-async def search_ghostwriter_clients(search_term: Optional[str] = None):
+async def search_ghostwriter_clients(
+    search_term: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         results = await search_clients(search_term=search_term)
-        clients = results["data"]["client"]
+        clients = (results.get("data") or {}).get("client") or []
         return [
             {
                 "id": c["id"],
@@ -134,65 +196,60 @@ async def search_ghostwriter_clients(search_term: Optional[str] = None):
             }
             for c in clients
         ]
-    except Exception as e:
-        logging.error("Error searching clients: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("search_ghostwriter_clients", exc) from exc
 
 
 @server.tool(
     name="search_ghostwriter_projects",
+    title="Search projects",
     description="""Search for existing Ghostwriter projects by codename, client info, or ID.
-    
+
     USE CASE: Before creating a new project, search to see if it already exists.
     SEARCH BY: Project codename, client name, or client codename (partial matches supported)
     RETURNS: List of projects with their IDs - use the 'id' field as projectId in create_ghostwriter_report
-    
-    REQUIRED FIELDS: Only 'id', 'codename', and 'clientId' are guaranteed to be present
-    OPTIONAL FIELDS: May include startDate, endDate, note, projectType, client details (empty if not set)
-    
+
     Example searches:
-    - search_ghostwriter_projects("REDTEAM2024") → finds project with codename "REDTEAM2024"
-    - search_ghostwriter_projects("Acme") → finds projects for clients named "Acme Corp", etc.
-    - search_ghostwriter_projects("ACME2024") → finds projects for client with codename "ACME2024"
-    
-    Example workflow:
-    1. Search for existing project by codename/client first
-    2. If found: use the returned 'id' as projectId
-    3. If not found: create new project with create_ghostwriter_project
+    - search_ghostwriter_projects("REDTEAM2024") -> finds project with codename "REDTEAM2024"
+    - search_ghostwriter_projects("Acme") -> finds projects for clients named "Acme Corp", etc.
     """,
+    annotations=READ_ONLY,
 )
-async def search_ghostwriter_projects(search_term: Optional[str] = None):
+async def search_ghostwriter_projects(
+    search_term: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         results = await search_projects(search_term=search_term)
-        projects = results["data"]["project"]
+        projects = (results.get("data") or {}).get("project") or []
         return [
             {
                 "id": p["id"],
                 "codename": p["codename"],
                 "clientId": p["clientId"],
-                "projectType": p.get("projectType", {}).get("projectType", "Unknown"),
+                "projectType": (p.get("projectType") or {}).get("projectType", "Unknown"),
                 "startDate": p.get("startDate", ""),
                 "endDate": p.get("endDate", ""),
                 "note": p.get("note", ""),
-                "clientName": p.get("client", {}).get("name", ""),
-                "clientCodename": p.get("client", {}).get("codename", ""),
+                "clientName": (p.get("client") or {}).get("name", ""),
+                "clientCodename": (p.get("client") or {}).get("codename", ""),
                 "_workflow_note": f"Use id={p['id']} as projectId for create_ghostwriter_report",
             }
             for p in projects
         ]
-    except Exception as e:
-        logging.error("Error searching projects: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("search_ghostwriter_projects", exc) from exc
 
 
 @server.tool(
     name="get_ghostwriter_client_by_id",
+    title="Get client by ID",
     description="Fetch a Ghostwriter client directly by ID. Returns full client details.",
+    annotations=READ_ONLY,
 )
-async def get_ghostwriter_client_by_id_tool(client_id: int):
+async def get_ghostwriter_client_by_id_tool(client_id: int) -> list[dict[str, Any]]:
     try:
         results = await get_client_by_id(client_id)
-        client = results["data"]["client"]
+        clients = (results.get("data") or {}).get("client") or []
         return [
             {
                 "id": x["id"],
@@ -202,51 +259,51 @@ async def get_ghostwriter_client_by_id_tool(client_id: int):
                 "address": x.get("address", ""),
                 "note": x.get("note", ""),
             }
-            for x in client
+            for x in clients
         ]
-    except Exception as e:
-        logging.error("Error fetching client by ID: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("get_ghostwriter_client_by_id", exc) from exc
 
 
 @server.tool(
     name="get_ghostwriter_project_by_id",
+    title="Get project by ID",
     description="Fetch a Ghostwriter project directly by ID. Returns project details.",
+    annotations=READ_ONLY,
 )
-async def get_ghostwriter_project_by_id_tool(project_id: int):
+async def get_ghostwriter_project_by_id_tool(project_id: int) -> list[dict[str, Any]]:
     try:
         result = await get_project_by_id(project_id)
-        project = result["data"]["project"]
+        projects = (result.get("data") or {}).get("project") or []
         return [
             {
                 "id": w["id"],
                 "codename": w["codename"],
                 "clientId": w["clientId"],
-                "projectType": w.get("projectType", {}).get("projectType", "Unknown"),
+                "projectType": (w.get("projectType") or {}).get("projectType", "Unknown"),
                 "startDate": w.get("startDate", ""),
                 "endDate": w.get("endDate", ""),
                 "note": w.get("note", ""),
-                "clientName": w.get("client", {}).get("name", ""),
-                "clientCodename": w.get("client", {}).get("codename", ""),
+                "clientName": (w.get("client") or {}).get("name", ""),
+                "clientCodename": (w.get("client") or {}).get("codename", ""),
                 "_workflow_note": f"Use id={w['id']} as projectId for create_ghostwriter_report",
             }
-            for w in project
+            for w in projects
         ]
-
-    except Exception as e:
-        logging.error("Error fetching project by ID: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("get_ghostwriter_project_by_id", exc) from exc
 
 
 @server.tool(
     name="get_ghostwriter_report_by_id",
+    title="Get report by ID",
     description="Fetch a Ghostwriter report directly by ID. Returns report details.",
+    annotations=READ_ONLY,
 )
-async def get_ghostwriter_report_by_id_tool(report_id: int):
+async def get_ghostwriter_report_by_id_tool(report_id: int) -> list[dict[str, Any]]:
     try:
         result = await get_report_by_id(report_id)
-        reports = result["data"]["report"]
-
+        reports = (result.get("data") or {}).get("report") or []
         return [
             {
                 "id": r["id"],
@@ -256,118 +313,107 @@ async def get_ghostwriter_report_by_id_tool(report_id: int):
             }
             for r in reports
         ]
-
-    except Exception as e:
-        logging.error("Error fetching report by ID: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("get_ghostwriter_report_by_id", exc) from exc
 
 
 @server.tool(
     name="generate_ghostwriter_codename",
+    title="Generate codename",
     description="""Generate a codename for a new project.
-    
+
     NOTE: This is typically used before creating a client or project to get a unique codename.""",
+    annotations=WRITE,
 )
-async def generate_ghostwriter_codename():
+async def generate_ghostwriter_codename() -> dict[str, str]:
     try:
         result = await generate_codename()
-        return {"codename": result["data"]["generateCodename"]["codename"]}
-    except Exception as e:
-        logging.error("Error generating codename: %s", e)
-        return {"error": str(e)}
+        return {"codename": (result.get("data") or {})["generateCodename"]["codename"]}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("generate_ghostwriter_codename", exc) from exc
 
 
 @server.tool(
     name="create_ghostwriter_client",
+    title="Create client",
     description="""Create a new Ghostwriter client using name, short name, and codename.
-    
-    DEPENDENCY: This is STEP 1 in the workflow (if client doesn't exist).
-    RECOMMENDED: First use search_ghostwriter_clients to check if client already exists!
+
+    DEPENDENCY: STEP 1 in the workflow (if the client doesn't exist).
+    RECOMMENDED: First use search_ghostwriter_clients to check if the client already exists.
     RETURNS: clientId (required for create_ghostwriter_project)
-    
+
     REQUIRED PARAMETERS:
     - name: Full client name (e.g., "Acme Corporation")
-    - short_name: Abbreviated name (e.g., "Acme")  
+    - short_name: Abbreviated name (e.g., "Acme")
     - codename: Unique identifier (e.g., "ACME2024")
-    
-    OPTIONAL PARAMETERS (can be empty/null):
+
+    OPTIONAL PARAMETERS (can be omitted):
     - address: Client's physical address
     - note: Additional notes about the client
-    
-    Example workflow:
-    1. Call search_ghostwriter_clients("ClientName") to check if exists
-    2. If NOT found: Call generate_ghostwriter_codename() to get a codename  
-    3. Call this function to create client
-    4. Use the returned 'id' as 'clientId' in create_ghostwriter_project
     """,
+    annotations=WRITE,
 )
 async def create_ghostwriter_client(
     name: str,
     short_name: str,
     codename: str,
-    address: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
+    address: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
     try:
         client_data = await create_client(name, short_name, codename, address, note)
 
         if not client_data:
-            return {"error": "Failed to create client - no data returned"}
+            raise GhostwriterError("Failed to create client - no data returned")
 
         result = {
             "id": client_data["id"],
             "name": client_data["name"],
-            "shortName": client_data.get("short_name", ""),
+            "shortName": client_data.get("shortName", ""),
             "codename": client_data["codename"],
             "address": client_data.get("address", ""),
             "note": client_data.get("note", ""),
             "_workflow_note": "Save this 'id' as clientId for create_ghostwriter_project",
         }
 
-        logging.info("Client created with ID: %s", result["id"])
+        logger.info("Client created with ID: %s", result["id"])
         return result
-    except Exception as e:
-        logging.error("Error creating client: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("create_ghostwriter_client", exc) from exc
 
 
 @server.tool(
     name="create_ghostwriter_project",
+    title="Create project",
     description="""Create a new Ghostwriter project.
 
-    DEPENDENCY: This is STEP 2 in the workflow (if project doesn't exist).
-    RECOMMENDED: First use search_ghostwriter_projects to check if project already exists!
+    DEPENDENCY: STEP 2 in the workflow (if the project doesn't exist).
+    RECOMMENDED: First use search_ghostwriter_projects to check if the project already exists.
     REQUIRES: clientId from create_ghostwriter_client OR search_ghostwriter_clients
     RETURNS: projectId (required for create_ghostwriter_report)
 
     Parameters:
-    - 'clientId': Get this from either:
-      • create_ghostwriter_client output (if creating new client)
-      • search_ghostwriter_clients output (if using existing client)
-    - 'projectTypeId' is an integer (1–5):
-       1 = Web App
-       2 = Red Team  
-       3 = Mobile App
-       4 = Cloud
-       5 = Internal
-    - 'startDate' and 'endDate' should be in ISO format (YYYY-MM-DD)
-    
-    Example: If search found client {"id": 123, ...}, use clientId=123
+    - 'clientId': from create_ghostwriter_client or search_ghostwriter_clients
+    - 'projectTypeId' is an integer (1-5), defaulting to GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID:
+       1 = Web App, 2 = Red Team, 3 = Mobile App, 4 = Cloud, 5 = Internal
+    - 'startDate' and 'endDate' are ISO dates (YYYY-MM-DD) and default to today
     """,
+    annotations=WRITE,
 )
 async def create_ghostwriter_project(
     clientId: int,
     codename: str,
-    projectTypeId: int,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-):
+    projectTypeId: int | None = None,
+    startDate: str | None = None,
+    endDate: str | None = None,
+) -> dict[str, Any]:
     try:
         result = await create_project(
             clientId, codename, projectTypeId, startDate, endDate
         )
-
-        project = result["data"]["insert_project_one"]
+        project = (result.get("data") or {}).get("insert_project_one")
+        if not project:
+            raise GhostwriterError("Failed to create project - no data returned")
 
         response = {
             "id": project["id"],
@@ -377,39 +423,38 @@ async def create_ghostwriter_project(
             "_workflow_note": "Save this 'id' as projectId for create_ghostwriter_report",
         }
 
-        logging.info("Project created with ID: %s", response["id"])
+        logger.info("Project created with ID: %s", response["id"])
         return response
-    except Exception as e:
-        logging.error("Error creating project: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("create_ghostwriter_project", exc) from exc
 
 
 @server.tool(
     name="create_ghostwriter_report",
+    title="Create report",
     description="""Create a new Ghostwriter report linked to a project.
-    
-    DEPENDENCY: This is STEP 3 in the workflow (if report doesn't exist).
-    RECOMMENDED: First use search_ghostwriter_reports to check if report already exists!
+
+    DEPENDENCY: STEP 3 in the workflow (if the report doesn't exist).
+    RECOMMENDED: First use search_ghostwriter_reports to check if the report already exists.
     REQUIRES: projectId from create_ghostwriter_project OR search_ghostwriter_projects
     RETURNS: reportId (required for attach_finding_to_report)
-    
+
     Parameters:
-    - 'projectId': Get this from either:
-      • create_ghostwriter_project output (if creating new project)
-      • search_ghostwriter_projects output (if using existing project)
-    - 'last_update': is date that the report was last updated most likely this current date in YYYY-MM-DD
-    
-    Example: If search found project {"id": 456, ...}, use projectId=456
+    - 'projectId': from create_ghostwriter_project or search_ghostwriter_projects
+    - 'last_update': ISO date the report was last updated (defaults to today)
     """,
+    annotations=WRITE,
 )
 async def create_ghostwriter_report(
     title: str,
     projectId: int,
-    last_update: Optional[str] = None,
-):
+    last_update: str | None = None,
+) -> dict[str, Any]:
     try:
         result = await create_report(title, projectId, last_update)
-        report = result["data"]["insert_report_one"]
+        report = (result.get("data") or {}).get("insert_report_one")
+        if not report:
+            raise GhostwriterError("Failed to create report - no data returned")
 
         response = {
             "id": report["id"],
@@ -419,28 +464,34 @@ async def create_ghostwriter_report(
             "_workflow_note": "Save this 'id' as reportId for attach_finding_to_report",
         }
 
-        logging.info("Report created with ID: %s", response["id"])
+        logger.info("Report created with ID: %s", response["id"])
         return response
-    except Exception as e:
-        logging.error("Error creating report: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("create_ghostwriter_report", exc) from exc
 
 
 @server.tool(
     name="create_ghostwriter_finding",
-    description="Create a new finding in the Ghostwriter findings library. Accepts optional extra fields as a dict.",
+    title="Create finding",
+    description=(
+        "Create a new finding in the Ghostwriter findings library. "
+        "Severity falls back to GHOSTWRITER_DEFAULT_SEVERITY_ID when omitted. "
+        "'extra_fields' maps to Ghostwriter's user-defined Extra Fields (v4.1+). "
+        "Library findings have no 'affectedEntities' field - set that on the "
+        "report finding via update_report_finding instead."
+    ),
+    annotations=WRITE,
 )
 async def create_ghostwriter_finding(
     title: str,
     description: str,
-    findingTypeId: Optional[int] = None,
-    severityId: Optional[int] = None,
-    cvssScore: Optional[float] = None,
-    cvssVector: Optional[str] = None,
-    replication_steps: Optional[str] = None,
-    affectedEntities: Optional[str] = None,
-    extra_fields: Optional[dict] = None,
-):
+    findingTypeId: int | None = None,
+    severityId: int | None = None,
+    cvssScore: float | None = None,
+    cvssVector: str | None = None,
+    replication_steps: str | None = None,
+    extra_fields: dict | None = None,
+) -> dict[str, Any]:
     try:
         result = await create_finding(
             title=title,
@@ -450,110 +501,122 @@ async def create_ghostwriter_finding(
             cvssScore=cvssScore,
             cvssVector=cvssVector,
             replication_steps=replication_steps,
-            affectedEntities=affectedEntities,
             extra_fields=extra_fields,
         )
 
         if not result:
-            return {"error": "Failed to create finding"}
+            raise GhostwriterError("Failed to create finding - no data returned")
 
         return {
             "id": result.get("id"),
             "title": result.get("title"),
             "description": result.get("description", ""),
         }
-    except Exception as e:
-        logging.error("Error creating finding: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("create_ghostwriter_finding", exc) from exc
 
 
 @server.tool(
     name="attach_finding_to_report",
+    title="Attach finding to report",
     description="""Attach a finding from the library to a report.
-    
-    DEPENDENCY: This is STEP 4 in the workflow.
+
+    DEPENDENCY: STEP 4 in the workflow.
     REQUIRES: reportId from create_ghostwriter_report OR search_ghostwriter_reports
-    
+
     Parameters:
-    - 'findingID': Either a finding ID (int) or title (str) to search for
-    - 'reportId': Get this from either:
-      • create_ghostwriter_report output (if creating new report)
-      • search_ghostwriter_reports output (if using existing report)
-    
-    Example: If search found report {"id": 789, ...}, use reportId=789
+    - 'finding': Either a finding ID (int) or a title (str) to search for
+    - 'reportId': from create_ghostwriter_report or search_ghostwriter_reports
     """,
+    annotations=WRITE,
 )
-async def attach_finding_to_report(finding, reportId: int):
+async def attach_finding_to_report(
+    finding: int | str, reportId: int
+) -> dict[str, Any]:
     try:
         if isinstance(finding, str):
             search_results = await search_findings(finding)
-            matches = search_results["data"]["finding"]
+            matches = (search_results.get("data") or {}).get("finding") or []
             if not matches:
-                return {"error": f"No finding found with title like: '{finding}'"}
+                raise GhostwriterError(f"No finding found with title like: '{finding}'")
             findingId = matches[0]["id"]
         else:
             findingId = int(finding)
 
         result = await add_finding_to_report(findingId, reportId)
+        attached = (result.get("data") or {}).get("attachFinding")
+        if not attached:
+            raise GhostwriterError("Failed to attach finding - no data returned")
         return {
-            "reportedFindingId": result["data"]["attachFinding"]["id"],
+            "reportedFindingId": attached["id"],
             "usedFindingId": findingId,
         }
-
-    except Exception as e:
-        logging.error("Error attaching finding to report: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("attach_finding_to_report", exc) from exc
 
 
 @server.tool(
     name="list_report_finding",
+    title="List report findings",
     description="List only the IDs and titles of findings attached to a report.",
+    annotations=READ_ONLY,
 )
-async def list_report_finding_titles_tool(reportId: int):
+async def list_report_finding_titles_tool(reportId: int) -> list[dict[str, Any]]:
     try:
         results = await list_report_findings(reportId)
-        findings = results["data"]["reportedFinding"]
+        findings = (results.get("data") or {}).get("reportedFinding") or []
         return [{"id": f["id"], "title": f["title"]} for f in findings]
-    except Exception as e:
-        logging.error("Error listing finding titles: %s", e)
-        return {"error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("list_report_finding", exc) from exc
 
 
 @server.tool(
     name="update_report_finding",
+    title="Update report finding",
     description="""Update the replication steps and/or affected entities of a reported finding.
-    Note: This will replace the current text not append to it.
-    
-    DEPENDENCY: This is STEP 5 in the workflow.
-    REQUIRES: findingId = reportedFindingId from attach_finding_to_report result.
-    
+
+    Note: This replaces the current text, it does not append to it.
+
+    DEPENDENCY: STEP 5 in the workflow.
+    REQUIRES: reportedFindingId from attach_finding_to_report.
+
     Parameters:
-    - 'reportedFindingId': The findingId of the finding that was just attached to the report.
-    - 'replicationSteps': A string detailing how to reproduce the finding (optional).
-    - 'affectedEntities': A string listing the assets or hosts affected by the finding (optional).
+    - 'reportedFindingId': the reportedFindingId returned by attach_finding_to_report
+      (the report-specific row, NOT the findings-library id)
+    - 'replicationSteps': how to reproduce the finding (optional)
+    - 'affectedEntities': assets or hosts affected by the finding (optional)
     """,
+    annotations=DESTRUCTIVE_WRITE,
 )
 async def update_report_finding_tool(
-    findingId: int, replicationSteps: str = None, affectedEntities: str = None
-):
+    reportedFindingId: int,
+    replicationSteps: str | None = None,
+    affectedEntities: str | None = None,
+) -> dict[str, Any]:
     try:
         result = await update_report_finding(
-            findingId=int(findingId),
+            reportedFindingId=int(reportedFindingId),
             replicationSteps=replicationSteps,
             affectedEntities=affectedEntities,
         )
-        return result["data"]["update_reportedFinding"]
-    except Exception as e:
-        logging.error("Error updating reported finding: %s", e)
-        return {"error": str(e)}
+        updated = (result.get("data") or {}).get("update_reportedFinding")
+        if not updated:
+            raise GhostwriterError("Failed to update reported finding - no data returned")
+        return updated
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error("update_report_finding", exc) from exc
 
 
-# Add a helper tool that explains the complete workflow
 @server.tool(
     name="explain_workflow",
-    description="Explains the complete workflow for creating a new penetration testing report in Ghostwriter, including how to use existing entities.",
+    title="Explain workflow",
+    description=(
+        "Explains the complete workflow for creating a new penetration testing "
+        "report in Ghostwriter, including how to use existing entities."
+    ),
+    annotations=READ_ONLY,
 )
-async def explain_workflow():
+async def explain_workflow() -> dict[str, Any]:
     return {
         "workflow_options": {
             "create_everything_new": [
@@ -650,7 +713,7 @@ async def explain_workflow():
     }
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Ghostwriter MCP Server",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -660,7 +723,7 @@ if __name__ == "__main__":
         choices=["stdio", "sse"],
         default="stdio",
         help="Transport mode: 'stdio' for local MCP clients (Claude Desktop, VS Code), "
-             "'sse' for HTTP-based clients",
+        "'sse' for HTTP-based clients",
     )
     parser.add_argument(
         "--host",
@@ -678,10 +741,12 @@ if __name__ == "__main__":
     if args.transport == "sse":
         server.settings.host = args.host
         server.settings.port = args.port
-        logging.info(
-            "Starting Ghostwriter MCP server (SSE) on %s:%s", args.host, args.port
-        )
+        logger.info("Starting Ghostwriter MCP server (SSE) on %s:%s", args.host, args.port)
         server.run(transport="sse")
     else:
-        logging.info("Starting Ghostwriter MCP server (stdio)")
+        logger.info("Starting Ghostwriter MCP server (stdio)")
         server.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

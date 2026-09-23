@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostwriter-mcp"
+version = "0.2.0"
+description = "MCP server exposing the Ghostwriter GraphQL API for pentest report management"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["mcp", "ghostwriter", "pentest", "model-context-protocol"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security",
+]
+dependencies = [
+  "httpx>=0.27",
+  "python-dotenv>=1.0",
+  # The server uses the FastMCP API that was renamed in mcp 2.x, so v1 is required.
+  "mcp[cli]>=1.10,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+ghostwriter-mcp = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "ghostwriter_api"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Tool descriptions are intentionally long, multi-line strings.
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

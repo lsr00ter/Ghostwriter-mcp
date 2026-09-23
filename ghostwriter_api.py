@@ -1,84 +1,291 @@
+"""Async client for the Ghostwriter GraphQL (Hasura) API.
+
+This module owns all network access to Ghostwriter and provides:
+
+* lazy, environment-driven configuration via :func:`get_settings`;
+* a shared ``httpx.AsyncClient`` (connection pooling + safe connection retries);
+* typed exceptions so MCP tools can surface failures as protocol errors;
+* input validation for identifiers, dates and text fields;
+* a bounded result size for every list query.
+
+TLS certificate verification is always enabled. If Ghostwriter uses a
+self-signed certificate, add its CA to the system trust store instead of
+disabling verification.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
 import os
-from dotenv import load_dotenv
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
 import httpx
-from typing import Any, Dict, Optional
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Support both env names
-GHOSTWRITER_GRAPHQL_URL = os.getenv("GHOSTWRITER_GRAPHQL_URL") or os.getenv(
-    "GHOSTWRITER_URL"
-)
-GHOSTWRITER_API_TOKEN = os.getenv("GHOSTWRITER_API_TOKEN")
-# Default request timeout in seconds
-GHOSTWRITER_REQUEST_TIMEOUT = float(os.getenv("GHOSTWRITER_REQUEST_TIMEOUT", "10"))
-GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID = os.getenv("GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID")
-GHOSTWRITER_DEFAULT_SEVERITY_ID = os.getenv("GHOSTWRITER_DEFAULT_SEVERITY_ID")
-GHOSTWRITER_PAGINATION_LIMIT = int(os.getenv("GHOSTWRITER_PAGINATION_LIMIT", "50"))
+DEFAULT_TIMEOUT_SECONDS = 10.0
+DEFAULT_PAGINATION_LIMIT = 50
+# Retries apply to connection-establishment failures only (never to a request
+# that already reached the server), so mutations cannot be duplicated.
+_TRANSPORT_RETRIES = 2
+
+
+class GhostwriterError(RuntimeError):
+    """Base class for all Ghostwriter client failures."""
+
+
+class GhostwriterConfigError(GhostwriterError):
+    """The client is misconfigured (for example a missing GraphQL URL)."""
+
+
+class GhostwriterValidationError(GhostwriterError):
+    """A caller supplied an invalid argument."""
+
+
+class GhostwriterHTTPError(GhostwriterError):
+    """Ghostwriter returned a non-2xx HTTP response."""
+
+
+class GhostwriterGraphQLError(GhostwriterError):
+    """Ghostwriter returned a GraphQL ``errors`` payload."""
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Resolved runtime configuration."""
+
+    graphql_url: str
+    api_token: str | None
+    request_timeout: float
+    pagination_limit: int
+    default_project_type_id: int | None
+    default_severity_id: int | None
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
+        env = os.environ if environ is None else environ
+        url = (
+            env.get("GHOSTWRITER_GRAPHQL_URL") or env.get("GHOSTWRITER_URL") or ""
+        ).strip()
+        token = (env.get("GHOSTWRITER_API_TOKEN") or "").strip() or None
+        return cls(
+            graphql_url=url,
+            api_token=token,
+            request_timeout=_parse_float(
+                env.get("GHOSTWRITER_REQUEST_TIMEOUT"), DEFAULT_TIMEOUT_SECONDS
+            ),
+            pagination_limit=_parse_int(
+                env.get("GHOSTWRITER_PAGINATION_LIMIT"), DEFAULT_PAGINATION_LIMIT
+            ),
+            default_project_type_id=_parse_optional_int(
+                env.get("GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID")
+            ),
+            default_severity_id=_parse_optional_int(
+                env.get("GHOSTWRITER_DEFAULT_SEVERITY_ID")
+            ),
+        )
+
+
+def _parse_float(raw: str | None, default: float) -> float:
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise GhostwriterConfigError(
+            f"GHOSTWRITER_REQUEST_TIMEOUT must be a number, got {raw!r}"
+        ) from exc
+
+
+def _parse_int(raw: str | None, default: int) -> int:
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise GhostwriterConfigError(
+            f"Expected an integer environment value, got {raw!r}"
+        ) from exc
+
+
+def _parse_optional_int(raw: str | None) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise GhostwriterConfigError(
+            f"Expected an integer environment value, got {raw!r}"
+        ) from exc
+
+
+def get_settings() -> Settings:
+    """Read configuration from the environment, failing early if it is unusable."""
+    settings = Settings.from_env()
+    if not settings.graphql_url:
+        raise GhostwriterConfigError(
+            "GHOSTWRITER_GRAPHQL_URL (or GHOSTWRITER_URL) is not set in the environment"
+        )
+    return settings
+
+
+# --------------------------------------------------------------------------- #
+# HTTP client
+# --------------------------------------------------------------------------- #
+_transport: httpx.AsyncBaseTransport | None = None
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        transport = _transport or httpx.AsyncHTTPTransport(retries=_TRANSPORT_RETRIES)
+        _client = httpx.AsyncClient(
+            transport=transport,
+            timeout=httpx.Timeout(get_settings().request_timeout),
+        )
+    return _client
+
+
+async def close_client() -> None:
+    """Close the shared client; safe to call when no client exists."""
+    global _client
+    client, _client = _client, None
+    if client is not None and not client.is_closed:
+        await client.aclose()
+
+
+def set_transport(transport: httpx.AsyncBaseTransport | None) -> None:
+    """Testing/embedding hook: replace the HTTP transport and drop the cached client."""
+    global _transport, _client
+    _transport = transport
+    _client = None
 
 
 async def _post(
     query: str,
-    variables: Optional[Dict[str, Any]] = None,
-    timeout: Optional[float] = None,
-    verify: Optional[bool] = None,
-    extra_headers: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
-    """Low-level HTTP POST to Ghostwriter GraphQL with sensible defaults.
-
-    - timeout: override default timeout (seconds)
-    - verify: override TLS verify (True/False). If None, defaults to True (verify certificates).
-    - extra_headers: merged into default headers
-    """
-    if not GHOSTWRITER_GRAPHQL_URL:
-        raise RuntimeError(
-            "GHOSTWRITER_GRAPHQL_URL (or GHOSTWRITER_URL) not set in environment"
-        )
+    variables: dict[str, Any] | None = None,
+    timeout: float | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """POST a GraphQL document to Ghostwriter and return the decoded payload."""
+    settings = get_settings()
 
     headers = {"Content-Type": "application/json"}
-    if GHOSTWRITER_API_TOKEN:
-        headers["Authorization"] = f"Bearer {GHOSTWRITER_API_TOKEN}"
+    if settings.api_token:
+        headers["Authorization"] = f"Bearer {settings.api_token}"
     if extra_headers:
         headers.update(extra_headers)
 
-    # By default we verify TLS certificates. If you need to disable verification
-    # (not recommended for production), pass verify=False explicitly to this call.
-    if verify is None:
-        verify = True
-
-    client_timeout = httpx.Timeout(timeout or GHOSTWRITER_REQUEST_TIMEOUT)
-
-    async with httpx.AsyncClient(verify=verify, timeout=client_timeout) as client:
-        try:
-            resp = await client.post(
-                GHOSTWRITER_GRAPHQL_URL,
-                headers=headers,
-                json={"query": query, "variables": variables or {}},
-            )
-        except httpx.RequestError as e:
-            raise RuntimeError(f"Network error when calling Ghostwriter GraphQL: {e}") from e
-
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            r = e.response
-            raise RuntimeError(f"Ghostwriter HTTP error {r.status_code}: {r.text}") from e
+    client = _get_client()
+    request_timeout = settings.request_timeout if timeout is None else timeout
 
     try:
-        data = resp.json()
+        response = await client.post(
+            settings.graphql_url,
+            headers=headers,
+            json={"query": query, "variables": variables or {}},
+            timeout=request_timeout,
+        )
+    except httpx.RequestError as exc:
+        raise GhostwriterError(
+            f"Network error calling Ghostwriter GraphQL: {exc}"
+        ) from exc
+
+    if response.is_error:
+        raise GhostwriterHTTPError(
+            f"Ghostwriter HTTP error {response.status_code}: {response.text}"
+        )
+
+    try:
+        payload = response.json()
     except ValueError as exc:
-        raise RuntimeError(f"Invalid JSON response from Ghostwriter: {resp.text}") from exc
+        raise GhostwriterError(
+            f"Invalid JSON response from Ghostwriter: {response.text[:500]}"
+        ) from exc
 
-    if isinstance(data, dict) and data.get("errors"):
-        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    if isinstance(payload, dict) and payload.get("errors"):
+        raise GhostwriterGraphQLError(f"GraphQL errors: {payload['errors']}")
 
-    return data
+    return payload
 
 
-async def search_findings(search_term: str):
+# --------------------------------------------------------------------------- #
+# Validation helpers
+# --------------------------------------------------------------------------- #
+def _require_text(value: Any, field: str) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        raise GhostwriterValidationError(f"{field} must be a non-empty string")
+    return text
+
+
+def _require_positive_int(value: Any, field: str) -> int:
+    if isinstance(value, bool):
+        raise GhostwriterValidationError(f"{field} must be an integer, got {value!r}")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise GhostwriterValidationError(
+            f"{field} must be an integer, got {value!r}"
+        ) from exc
+    if parsed <= 0:
+        raise GhostwriterValidationError(f"{field} must be > 0, got {parsed}")
+    return parsed
+
+
+def _normalize_date(value: Any, field: str, default: str | None = None) -> str | None:
+    """Validate an ISO date/datetime string, falling back to ``default``."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    if isinstance(value, dt.datetime):
+        return value.isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    text = str(value).strip()
+    try:
+        dt.datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise GhostwriterValidationError(
+            f"{field} must be an ISO date (YYYY-MM-DD), got {value!r}"
+        ) from exc
+    return text
+
+
+def _today() -> str:
+    return dt.date.today().isoformat()
+
+
+def _like(search_term: str | None) -> str:
+    text = "" if search_term is None else str(search_term).strip()
+    return f"%{text}%" if text else "%%"
+
+
+def _page_limit(limit: int | None = None) -> int:
+    if limit is None:
+        return get_settings().pagination_limit
+    return _require_positive_int(limit, "limit")
+
+
+def _first_row(result: dict[str, Any], key: str) -> dict[str, Any] | None:
+    data = result.get("data") or {}
+    return data.get(key)
+
+
+# --------------------------------------------------------------------------- #
+# Read operations
+# --------------------------------------------------------------------------- #
+async def search_findings(search_term: str | None = None, limit: int | None = None):
+    """Search the findings library by title."""
     query = """
-    query ($term: String!) {
-      finding(where: {title: {_ilike: $term}}) {
+    query ($term: String!, $limit: Int!) {
+      finding(where: {title: {_ilike: $term}}, limit: $limit) {
         id
         title
         description
@@ -88,36 +295,36 @@ async def search_findings(search_term: str):
       }
     }
     """
-    variables = {"term": f"%{search_term}%" if search_term else "%%"}
+    variables = {"term": _like(search_term), "limit": _page_limit(limit)}
     return await _post(query, variables)
 
 
-async def search_reports(search_term: str):
-    """Search for report by title"""
+async def search_reports(search_term: str | None = None, limit: int | None = None):
+    """Search for reports by title."""
     query = """
-    query ($term: String!) {
-      report(where: {title: {_ilike: $term}}) {
+    query ($term: String!, $limit: Int!) {
+      report(where: {title: {_ilike: $term}}, limit: $limit) {
         id
         title
         projectId
       }
     }
     """
-    variables = {"term": f"%{search_term}%" if search_term else "%%"}
+    variables = {"term": _like(search_term), "limit": _page_limit(limit)}
     return await _post(query, variables)
 
 
-async def search_clients(search_term: str):
-    """Search for clients by name, codename, or shortName"""
+async def search_clients(search_term: str | None = None, limit: int | None = None):
+    """Search for clients by name, codename, or shortName."""
     query = """
-    query ($term: String!) {
+    query ($term: String!, $limit: Int!) {
       client(where: {
         _or: [
           {name: {_ilike: $term}},
           {codename: {_ilike: $term}},
           {shortName: {_ilike: $term}}
         ]
-      }) {
+      }, limit: $limit) {
         id
         name
         shortName
@@ -127,29 +334,30 @@ async def search_clients(search_term: str):
       }
     }
     """
-    variables = {"term": f"%{search_term}%" if search_term else "%%"}
+    variables = {"term": _like(search_term), "limit": _page_limit(limit)}
     result = await _post(query, variables)
 
-    if result.get("data", {}).get("client"):
-        for client in result["data"]["client"]:
-            client["address"] = client.get("address") or ""
-            client["note"] = client.get("note") or ""
-            client["shortName"] = client.get("shortName") or ""
-
+    clients = (result.get("data") or {}).get("client") or []
+    for client in clients:
+        client["name"] = client.get("name") or ""
+        client["codename"] = client.get("codename") or ""
+        client["address"] = client.get("address") or ""
+        client["note"] = client.get("note") or ""
+        client["shortName"] = client.get("shortName") or ""
     return result
 
 
-async def search_projects(search_term: str):
-    """Search for projects by codename or related client info"""
+async def search_projects(search_term: str | None = None, limit: int | None = None):
+    """Search for projects by codename or related client info."""
     query = """
-    query ($term: String!) {
+    query ($term: String!, $limit: Int!) {
       project(where: {
         _or: [
           {codename: {_ilike: $term}},
           {client: {name: {_ilike: $term}}},
           {client: {codename: {_ilike: $term}}}
         ]
-      }) {
+      }, limit: $limit) {
         id
         codename
         clientId
@@ -166,23 +374,23 @@ async def search_projects(search_term: str):
       }
     }
     """
-    variables = {"term": f"%{search_term}%" if search_term else "%%"}
+    variables = {"term": _like(search_term), "limit": _page_limit(limit)}
     result = await _post(query, variables)
 
-    if result.get("data", {}).get("project"):
-        for project in result["data"]["project"]:
-            project["note"] = project.get("note") or ""
-            project["startDate"] = project.get("startDate") or ""
-            project["endDate"] = project.get("endDate") or ""
-            if not project.get("projectType"):
-                project["projectType"] = {"projectType": "Unknown"}
-            if not project.get("client"):
-                project["client"] = {"name": "", "codename": ""}
+    projects = (result.get("data") or {}).get("project") or []
+    for project in projects:
+        project["note"] = project.get("note") or ""
+        project["startDate"] = project.get("startDate") or ""
+        project["endDate"] = project.get("endDate") or ""
+        if not project.get("projectType"):
+            project["projectType"] = {"projectType": "Unknown"}
+        if not project.get("client"):
+            project["client"] = {"name": "", "codename": ""}
     return result
 
 
 async def get_client_by_id(client_id: int):
-    """Get a specific client by ID"""
+    """Get a specific client by ID."""
     query = """
     query ($clientId: bigint!) {
       client(where: {id: {_eq: $clientId}}) {
@@ -193,12 +401,12 @@ async def get_client_by_id(client_id: int):
       }
     }
     """
-    variables = {"clientId": client_id}
+    variables = {"clientId": _require_positive_int(client_id, "client_id")}
     return await _post(query, variables)
 
 
 async def get_project_by_id(project_id: int):
-    """Get a specific project by ID"""
+    """Get a specific project by ID."""
     query = """
     query ($projectId: bigint!) {
       project(where: {id: {_eq: $projectId}}) {
@@ -217,12 +425,12 @@ async def get_project_by_id(project_id: int):
       }
     }
     """
-    variables = {"projectId": project_id}
+    variables = {"projectId": _require_positive_int(project_id, "project_id")}
     return await _post(query, variables)
 
 
 async def get_report_by_id(report_id: int):
-    """Get a specific report by ID"""
+    """Get a specific report by ID."""
     query = """
     query ($reportId: bigint!) {
       report(where: {id: {_eq: $reportId}}) {
@@ -233,46 +441,29 @@ async def get_report_by_id(report_id: int):
       }
     }
     """
-    variables = {"reportId": report_id}
-    result = await _post(query, variables)
-    return result
+    variables = {"reportId": _require_positive_int(report_id, "report_id")}
+    return await _post(query, variables)
 
 
-# async def get_projects_by_client(client_id: int):
-#     """Get all projects for a specific client"""
-#     query = """
-#     query ($clientId: bigint!) {
-#       project(where: {clientId: {_eq: $clientId}}) {
-#         id
-#         codename
-#         startDate
-#         endDate
-#         projectType {
-#           projectType
-#         }
-#       }
-#     }
-#     """
-#     variables = {"clientId": client_id}
-#     return await _post(query, variables)
-
-
-# async def get_reports_by_project(project_id: int):
-#     """Get all reports for a specific project"""
-#     query = """
-#     query ($projectId: bigint!) {
-#       report(where: {projectId: {_eq: $projectId}}) {
-#         id
-#         title
-#         last_update
-#       }
-#     }
-#     """
-#     variables = {"projectId": project_id}
-#     return await _post(query, variables)
+async def list_report_findings(report_id: int, limit: int | None = None):
+    """List findings attached to a report."""
+    query = """
+    query ($reportId: bigint!, $limit: Int!) {
+      reportedFinding(where: {reportId: {_eq: $reportId}}, limit: $limit) {
+        id
+        title
+      }
+    }
+    """
+    variables = {
+        "reportId": _require_positive_int(report_id, "report_id"),
+        "limit": _page_limit(limit),
+    }
+    return await _post(query, variables)
 
 
 async def generate_codename():
+    """Ask Ghostwriter for a unique project codename."""
     query = """
     mutation {
       generateCodename {
@@ -283,26 +474,29 @@ async def generate_codename():
     return await _post(query)
 
 
+# --------------------------------------------------------------------------- #
+# Write operations
+# --------------------------------------------------------------------------- #
 async def create_client(
     name: str,
     short_name: str,
     codename: str,
-    address: str = None,
-    note: str = None,
-    extra_fields: Optional[Dict[str, Any]] = None,
+    address: str | None = None,
+    note: str | None = None,
+    extra_fields: dict[str, Any] | None = None,
 ):
-    # Build object for insertion using Hasura input type `client_insert_input`
-    obj: Dict[str, Any] = {
-        "name": name,
-        "shortName": short_name,
-        "codename": codename,
+    """Create a client and return the inserted row."""
+    obj: dict[str, Any] = {
+        "name": _require_text(name, "name"),
+        "shortName": _require_text(short_name, "short_name"),
+        "codename": _require_text(codename, "codename"),
     }
     if address is not None:
         obj["address"] = address
     if note is not None:
         obj["note"] = note
     if extra_fields:
-        obj.update(extra_fields)
+        obj["extra_fields"] = extra_fields
 
     query = """
     mutation CreateClient($object: client_insert_input!) {
@@ -316,28 +510,41 @@ async def create_client(
       }
     }
     """
-    variables = {"object": obj}
-    result = await _post(query, variables)
-    return result.get("data", {}).get("insert_client_one")
+    result = await _post(query, {"object": obj})
+    return _first_row(result, "insert_client_one")
 
 
 async def create_project(
     clientId: int,
     codename: str,
-    projectTypeId: int,
-    startDate: str,
-    endDate: str,
-    extra_fields: Optional[Dict[str, Any]] = None,
+    projectTypeId: int | None = None,
+    startDate: str | None = None,
+    endDate: str | None = None,
+    extra_fields: dict[str, Any] | None = None,
 ):
-    obj: Dict[str, Any] = {
-        "clientId": int(clientId),
-        "projectTypeId": int(projectTypeId),
-        "codename": codename,
-        "startDate": startDate,
-        "endDate": endDate,
+    """Create a project under a client and return the inserted row.
+
+    ``projectTypeId`` falls back to ``GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID`` when
+    omitted; it is an error if neither is provided.
+    """
+    if projectTypeId is None:
+        projectTypeId = get_settings().default_project_type_id
+    if projectTypeId is None:
+        raise GhostwriterValidationError(
+            "projectTypeId is required (or set GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID)"
+        )
+
+    start = _normalize_date(startDate, "startDate", default=_today())
+    end = _normalize_date(endDate, "endDate", default=start)
+    obj: dict[str, Any] = {
+        "clientId": _require_positive_int(clientId, "clientId"),
+        "projectTypeId": _require_positive_int(projectTypeId, "projectTypeId"),
+        "codename": _require_text(codename, "codename"),
+        "startDate": start,
+        "endDate": end,
     }
     if extra_fields:
-        obj.update(extra_fields)
+        obj["extra_fields"] = extra_fields
 
     query = """
     mutation CreateProject($object: project_insert_input!) {
@@ -349,15 +556,15 @@ async def create_project(
       }
     }
     """
-    variables = {"object": obj}
-    return await _post(query, variables)
+    return await _post(query, {"object": obj})
 
 
-async def create_report(title: str, projectId: int, last_update: str):
-    obj: Dict[str, Any] = {
-        "title": title,
-        "projectId": int(projectId),
-        "last_update": last_update,
+async def create_report(title: str, projectId: int, last_update: str | None = None):
+    """Create a report under a project and return the inserted row."""
+    obj: dict[str, Any] = {
+        "title": _require_text(title, "title"),
+        "projectId": _require_positive_int(projectId, "projectId"),
+        "last_update": _normalize_date(last_update, "last_update", default=_today()),
     }
 
     query = """
@@ -370,41 +577,53 @@ async def create_report(title: str, projectId: int, last_update: str):
       }
     }
     """
-    variables = {"object": obj}
-    return await _post(query, variables)
+    return await _post(query, {"object": obj})
 
 
 async def create_finding(
     title: str,
     description: str,
-    findingTypeId: Optional[int] = None,
-    severityId: Optional[int] = None,
-    cvssScore: Optional[float] = None,
-    cvssVector: Optional[str] = None,
-    replication_steps: Optional[str] = None,
-    affectedEntities: Optional[str] = None,
-    extra_fields: Optional[Dict[str, Any]] = None,
+    findingTypeId: int | None = None,
+    severityId: int | None = None,
+    cvssScore: float | None = None,
+    cvssVector: str | None = None,
+    replication_steps: str | None = None,
+    extra_fields: dict[str, Any] | None = None,
 ):
-    """Create a new finding in the Ghostwriter findings library.
+    """Create a finding in the Ghostwriter findings library.
 
-    The function accepts common fields and merges any `extra_fields` into the insert object so
-    callers can provide optional or custom fields without changing this helper.
+    Field names mirror ``finding_insert_input`` (note ``cvss_score`` /
+    ``cvss_vector``). The library has no ``affectedEntities`` field; that
+    belongs to a *reported* finding (see :func:`update_report_finding`).
     """
-    obj: Dict[str, Any] = {"title": title, "description": description}
+    obj: dict[str, Any] = {
+        "title": _require_text(title, "title"),
+        "description": _require_text(description, "description"),
+    }
     if findingTypeId is not None:
-        obj["findingTypeId"] = int(findingTypeId)
+        obj["findingTypeId"] = _require_positive_int(findingTypeId, "findingTypeId")
+    if severityId is None:
+        severityId = get_settings().default_severity_id
     if severityId is not None:
-        obj["severityId"] = int(severityId)
+        obj["severityId"] = _require_positive_int(severityId, "severityId")
     if cvssScore is not None:
-        obj["cvssScore"] = float(cvssScore)
-    if cvssVector is not None:
-        obj["cvssVector"] = cvssVector
+        try:
+            score = float(cvssScore)
+        except (TypeError, ValueError) as exc:
+            raise GhostwriterValidationError(
+                f"cvssScore must be a number, got {cvssScore!r}"
+            ) from exc
+        if not 0.0 <= score <= 10.0:
+            raise GhostwriterValidationError(
+                f"cvssScore must be between 0.0 and 10.0, got {score}"
+            )
+        obj["cvss_score"] = score
+    if cvssVector:
+        obj["cvss_vector"] = cvssVector
     if replication_steps is not None:
         obj["replication_steps"] = replication_steps
-    if affectedEntities is not None:
-        obj["affectedEntities"] = affectedEntities
     if extra_fields:
-        obj.update(extra_fields)
+        obj["extra_fields"] = extra_fields
 
     query = """
     mutation CreateFinding($object: finding_insert_input!) {
@@ -415,12 +634,12 @@ async def create_finding(
       }
     }
     """
-    variables = {"object": obj}
-    result = await _post(query, variables)
-    return result.get("data", {}).get("insert_finding_one")
+    result = await _post(query, {"object": obj})
+    return _first_row(result, "insert_finding_one")
 
 
 async def add_finding_to_report(findingId: int, reportId: int):
+    """Attach a library finding to a report (creates a reportedFinding row)."""
     query = """
     mutation attachFinding($findingId: Int!, $reportId: Int!) {
       attachFinding(findingId: $findingId, reportId: $reportId) {
@@ -428,48 +647,48 @@ async def add_finding_to_report(findingId: int, reportId: int):
       }
     }
     """
-    return await _post(query, {"findingId": findingId, "reportId": reportId})
-
-
-async def list_report_findings(reportId: int):
-    query = """
-    query ($reportId: bigint!) {
-      reportedFinding(where: { reportId: { _eq: $reportId } }) {
-        id
-        title
-      }
+    variables = {
+        "findingId": _require_positive_int(findingId, "findingId"),
+        "reportId": _require_positive_int(reportId, "reportId"),
     }
-    """
-    variables = {"reportId": reportId}
     return await _post(query, variables)
 
 
 async def update_report_finding(
-    findingId: int, replicationSteps: str = None, affectedEntities: str = None
+    reportedFindingId: int,
+    replicationSteps: str | None = None,
+    affectedEntities: str | None = None,
 ):
-    set_fields_string = ""
-    variables = {"findingId": int(findingId)}
+    """Update replication steps and/or affected entities of a reported finding.
 
+    ``reportedFindingId`` is the ``id`` of the ``reportedFinding`` row returned
+    by ``attachFinding`` -- not a findings-library id. The provided values
+    replace the existing text; they are not appended.
+    """
+    variables: dict[str, Any] = {
+        "reportedFindingId": _require_positive_int(
+            reportedFindingId, "reportedFindingId"
+        )
+    }
+    set_fields = []
     if replicationSteps is not None:
-        set_fields_string += "replication_steps: $replicationSteps"
+        set_fields.append("replication_steps: $replicationSteps")
         variables["replicationSteps"] = replicationSteps
-
     if affectedEntities is not None:
-        if set_fields_string:
-            set_fields_string += ", "
-        set_fields_string += "affectedEntities: $affectedEntities"
+        set_fields.append("affectedEntities: $affectedEntities")
         variables["affectedEntities"] = affectedEntities
 
-    if not set_fields_string:
-        raise ValueError(
+    if not set_fields:
+        raise GhostwriterValidationError(
             "At least one of replicationSteps or affectedEntities must be provided."
         )
 
+    # Field names are hardcoded above; only their presence varies.
     query = f"""
-    mutation updateFinding($findingId: bigint!, $replicationSteps: String, $affectedEntities: String) {{
+    mutation updateReportedFinding($reportedFindingId: bigint!, $replicationSteps: String, $affectedEntities: String) {{
       update_reportedFinding(
-        where: {{ id: {{ _eq: $findingId }} }},
-        _set: {{ {set_fields_string} }}
+        where: {{id: {{_eq: $reportedFindingId}}}},
+        _set: {{ {", ".join(set_fields)} }}
       ) {{
         affected_rows
         returning {{
