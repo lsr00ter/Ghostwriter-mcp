@@ -401,5 +401,64 @@ class TestWriteToolOutputs(ToolTestCase):
         self.assertEqual(result["timezone"], "UTC")
 
 
+class TestDeleteTools(ToolTestCase):
+    """Deletes are irreversible, so the guards matter more than the happy path."""
+
+    async def test_delete_requires_confirmation(self):
+        for tool, kwargs in (
+            (main.delete_ghostwriter_report_finding, {"reportedFindingId": 9}),
+            (main.delete_ghostwriter_report, {"reportId": 7}),
+            (main.delete_ghostwriter_project, {"projectId": 6}),
+            (main.delete_ghostwriter_client, {"clientId": 6}),
+            (main.delete_ghostwriter_finding, {"findingId": 7}),
+        ):
+            with self.subTest(tool=tool.__name__):
+                with self.assertRaises(ToolError):
+                    await tool(**kwargs)
+                # nothing may reach the network without confirmation
+                self.assertEqual(self.requests, [])
+
+    async def test_delete_rejects_mismatched_confirmation(self):
+        with self.assertRaises(ToolError):
+            await main.delete_ghostwriter_client(clientId=6, confirmId=7)
+        self.assertEqual(self.requests, [])
+
+    async def test_delete_uses_by_pk_and_returns_the_row(self):
+        self.queue(
+            {"data": {"delete_client_by_pk": {"id": 6, "name": "ZZ", "codename": "CODE"}}}
+        )
+        result = await main.delete_ghostwriter_client(clientId=6, confirmId=6)
+        self.assertEqual(result["deleted"], True)
+        self.assertEqual(result["entity"], "client")
+        self.assertEqual(result["id"], 6)
+        body = json.loads(self.requests[0].content)
+        # _by_pk targets exactly one row; a where filter could match more
+        self.assertIn("delete_client_by_pk(id: $id)", body["query"])
+        self.assertNotIn("where", body["query"])
+        self.assertEqual(body["variables"], {"id": 6})
+
+    async def test_deleting_a_missing_row_raises(self):
+        """Hasura returns null rather than an error when the id does not exist."""
+        self.queue({"data": {"delete_report_by_pk": None}})
+        with self.assertRaises(ToolError):
+            await main.delete_ghostwriter_report(reportId=999999, confirmId=999999)
+
+    async def test_every_delete_tool_targets_its_own_entity(self):
+        cases = [
+            (main.delete_ghostwriter_report_finding, "reportedFindingId", 9,
+             "delete_reportedFinding_by_pk"),
+            (main.delete_ghostwriter_report, "reportId", 7, "delete_report_by_pk"),
+            (main.delete_ghostwriter_project, "projectId", 6, "delete_project_by_pk"),
+            (main.delete_ghostwriter_client, "clientId", 6, "delete_client_by_pk"),
+            (main.delete_ghostwriter_finding, "findingId", 7, "delete_finding_by_pk"),
+        ]
+        for tool, arg, value, field in cases:
+            with self.subTest(tool=tool.__name__):
+                self.requests.clear()
+                self.queue({"data": {field: {"id": value}}})
+                await tool(**{arg: value, "confirmId": value})
+                self.assertIn(field, json.loads(self.requests[0].content)["query"])
+
+
 if __name__ == "__main__":
     unittest.main()

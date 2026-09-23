@@ -22,11 +22,13 @@ from mcp.types import ToolAnnotations
 import ghostwriter_api as gw
 from ghostwriter_api import (
     GhostwriterError,
+    GhostwriterValidationError,
     add_finding_to_report,
     create_client,
     create_finding,
     create_project,
     create_report,
+    delete_entity,
     generate_codename,
     get_client_by_id,
     get_project_by_id,
@@ -788,6 +790,153 @@ async def update_report_finding_tool(
         return updated
     except Exception as exc:  # noqa: BLE001
         raise _tool_error("update_report_finding", exc) from exc
+
+
+# Deleting a client or project takes its reports and findings with it, and
+# Ghostwriter has no undo. Requiring the caller to pass the id back as
+# ``confirmId`` means a delete cannot happen through a single mistaken argument.
+DELETE_CONFIRMATION_HINT = (
+    "Pass confirmId with the same value as the id being deleted. This guards "
+    "against deleting the wrong row by mistake: the deletion is permanent and "
+    "Ghostwriter has no undo."
+)
+
+
+def _check_confirmation(entity: str, row_id: int, confirm_id: int | None) -> None:
+    """Refuse a delete unless the caller repeated the id deliberately."""
+    if confirm_id is None:
+        raise GhostwriterValidationError(
+            f"Refusing to delete {entity} {row_id}: confirmId is required. "
+            + DELETE_CONFIRMATION_HINT
+        )
+    if int(confirm_id) != int(row_id):
+        raise GhostwriterValidationError(
+            f"Refusing to delete {entity} {row_id}: confirmId was "
+            f"{confirm_id}, which does not match. " + DELETE_CONFIRMATION_HINT
+        )
+
+
+async def _delete_tool(
+    tool_name: str, entity: str, row_id: int, confirm_id: int | None
+) -> dict[str, Any]:
+    """Shared body for the delete tools: confirm, delete, report what went."""
+    try:
+        _check_confirmation(entity, row_id, confirm_id)
+        deleted = await delete_entity(entity, int(row_id))
+        logger.warning("Deleted %s %s: %s", entity, row_id, deleted)
+        return {"deleted": True, "entity": entity, **deleted}
+    except Exception as exc:  # noqa: BLE001
+        raise _tool_error(tool_name, exc) from exc
+
+
+@server.tool(
+    name="delete_ghostwriter_report_finding",
+    title="Delete report finding",
+    description="""Permanently remove a finding from a report.
+
+    This deletes the report's copy only. The findings-library entry it was
+    created from is left alone, so the finding can be attached again later.
+
+    PERMANENT: there is no undo. Pass confirmId matching reportedFindingId.
+    Use list_report_finding first to confirm which id you mean.
+    """,
+    annotations=DESTRUCTIVE_WRITE,
+)
+async def delete_ghostwriter_report_finding(
+    reportedFindingId: int, confirmId: int | None = None
+) -> dict[str, Any]:
+    return await _delete_tool(
+        "delete_ghostwriter_report_finding",
+        "reportedFinding",
+        reportedFindingId,
+        confirmId,
+    )
+
+
+@server.tool(
+    name="delete_ghostwriter_report",
+    title="Delete report",
+    description="""Permanently delete a report and every finding attached to it.
+
+    CASCADES: the report's findings, evidence and observations go with it. The
+    project and the findings library are untouched.
+
+    PERMANENT: there is no undo. Pass confirmId matching reportId.
+    Use get_ghostwriter_report_by_id first to confirm which report you mean.
+    """,
+    annotations=DESTRUCTIVE_WRITE,
+)
+async def delete_ghostwriter_report(
+    reportId: int, confirmId: int | None = None
+) -> dict[str, Any]:
+    return await _delete_tool(
+        "delete_ghostwriter_report", "report", reportId, confirmId
+    )
+
+
+@server.tool(
+    name="delete_ghostwriter_project",
+    title="Delete project",
+    description="""Permanently delete a project and everything under it.
+
+    CASCADES: every report in the project, and those reports' findings, go with
+    it. This is a large blast radius - delete the reports individually first if
+    you want to see what you are removing. The client is untouched.
+
+    PERMANENT: there is no undo. Pass confirmId matching projectId.
+    Use get_ghostwriter_project_by_id first to confirm which project you mean.
+    """,
+    annotations=DESTRUCTIVE_WRITE,
+)
+async def delete_ghostwriter_project(
+    projectId: int, confirmId: int | None = None
+) -> dict[str, Any]:
+    return await _delete_tool(
+        "delete_ghostwriter_project", "project", projectId, confirmId
+    )
+
+
+@server.tool(
+    name="delete_ghostwriter_client",
+    title="Delete client",
+    description="""Permanently delete a client and everything under it.
+
+    CASCADES: every project of this client, every report in those projects, and
+    those reports' findings. This is the widest blast radius of any tool here.
+
+    PERMANENT: there is no undo. Pass confirmId matching clientId.
+    Use get_ghostwriter_client_by_id first to confirm which client you mean.
+    """,
+    annotations=DESTRUCTIVE_WRITE,
+)
+async def delete_ghostwriter_client(
+    clientId: int, confirmId: int | None = None
+) -> dict[str, Any]:
+    return await _delete_tool(
+        "delete_ghostwriter_client", "client", clientId, confirmId
+    )
+
+
+@server.tool(
+    name="delete_ghostwriter_finding",
+    title="Delete library finding",
+    description="""Permanently delete a finding from the findings library.
+
+    The library entry is a reusable template shared across all reports. Reports
+    that already include a copy of it keep their copies; this only removes the
+    template, so it can no longer be attached to new reports.
+
+    PERMANENT: there is no undo. Pass confirmId matching findingId.
+    Use search_ghostwriter_findings first to confirm which finding you mean.
+    """,
+    annotations=DESTRUCTIVE_WRITE,
+)
+async def delete_ghostwriter_finding(
+    findingId: int, confirmId: int | None = None
+) -> dict[str, Any]:
+    return await _delete_tool(
+        "delete_ghostwriter_finding", "finding", findingId, confirmId
+    )
 
 
 @server.tool(

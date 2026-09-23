@@ -912,3 +912,52 @@ async def list_lookups():
     }
     """
     return await _post(query)
+
+
+# Deletions are irreversible and Ghostwriter has no undo, so each entity gets an
+# explicit single-row entry rather than one generic "delete anything" helper.
+# ``_by_pk`` deletes exactly one row by id and returns it, so a mistyped id
+# cannot take out a neighbouring row the way a ``where`` filter could.
+_DELETE_TARGETS: dict[str, tuple[str, str, str]] = {
+    # entity -> (mutation field, id argument name, returned columns)
+    "reportedFinding": (
+        "delete_reportedFinding_by_pk",
+        "reportedFindingId",
+        "id title reportId",
+    ),
+    "report": ("delete_report_by_pk", "reportId", "id title projectId"),
+    "project": ("delete_project_by_pk", "projectId", "id codename clientId"),
+    "client": ("delete_client_by_pk", "clientId", "id name codename"),
+    "finding": ("delete_finding_by_pk", "findingId", "id title"),
+}
+
+
+async def delete_entity(entity: str, row_id: int) -> dict[str, Any]:
+    """Delete a single row by primary key and return the deleted row.
+
+    Raises :class:`GhostwriterNotFoundError` when no such row exists, because
+    Hasura answers a missing ``_by_pk`` delete with ``null`` and no error --
+    indistinguishable from success unless it is checked.
+    """
+    try:
+        field, arg_name, columns = _DELETE_TARGETS[entity]
+    except KeyError:
+        raise GhostwriterValidationError(
+            f"Unknown entity {entity!r}; expected one of "
+            f"{', '.join(sorted(_DELETE_TARGETS))}"
+        ) from None
+
+    row_id = _require_positive_int(row_id, arg_name)
+    # ``field`` and ``columns`` come from the table above, never from input.
+    query = f"""
+    mutation deleteGhostwriterRow($id: bigint!) {{
+      {field}(id: $id) {{
+        {columns}
+      }}
+    }}
+    """
+    result = await _post(query, {"id": row_id})
+    deleted = (result.get("data") or {}).get(field)
+    if not deleted:
+        raise GhostwriterNotFoundError(f"No {entity} with id {row_id}.")
+    return deleted

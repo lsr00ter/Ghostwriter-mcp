@@ -468,6 +468,30 @@ class TestSchemaConformance(ApiTestCase):
         self.assert_keys_valid(obj, "client_insert_input")
         self.assertEqual(obj["timezone"], "UTC")
 
+    async def test_delete_entity_rejects_unknown_entity(self):
+        with self.assertRaises(gw.GhostwriterValidationError):
+            await gw.delete_entity("user", 1)
+        self.assertEqual(self.requests, [])
+
+    async def test_delete_entity_rejects_bad_id(self):
+        for bad in (0, -1, "abc"):
+            with self.subTest(row_id=bad):
+                with self.assertRaises(gw.GhostwriterValidationError):
+                    await gw.delete_entity("client", bad)
+        self.assertEqual(self.requests, [])
+
+    async def test_delete_entity_missing_row_raises(self):
+        self.queue({"data": {"delete_finding_by_pk": None}})
+        with self.assertRaises(gw.GhostwriterNotFoundError):
+            await gw.delete_entity("finding", 4242)
+
+    async def test_delete_entity_covers_the_workflow_entities(self):
+        """Anything the server can create, it must be able to delete."""
+        self.assertEqual(
+            set(gw._DELETE_TARGETS),
+            {"client", "project", "report", "finding", "reportedFinding"},
+        )
+
     async def test_list_lookups_returns_all_three_tables(self):
         self.queue(
             {

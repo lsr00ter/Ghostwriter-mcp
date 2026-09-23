@@ -12,6 +12,7 @@ clients, projects, reports and findings for penetration testing engagements.
 - Search and retrieve clients, projects, reports, and findings
 - Create new clients, projects, reports, and findings
 - Attach findings from the library to reports
+- Delete test or mistaken data, with a confirmation guard on every delete
 - Tailor a report's copy of a finding without touching the shared library entry:
   narrative fields, detection guidance, severity and CVSS re-rating, and position
 - Populate custom Extra Fields (JSONB) on clients, projects, and findings
@@ -211,6 +212,11 @@ Claude Desktop has no project scope, so it needs absolute paths in
 | `attach_finding_to_report`      | write       | Attach a library finding to a report             |
 | `list_report_finding`           | read        | List all findings attached to a report           |
 | `update_report_finding`         | destructive | Edit a report's copy of a finding (text, rating, position) |
+| `delete_ghostwriter_report_finding` | destructive | Remove a finding from a report (keeps the library entry) |
+| `delete_ghostwriter_report`     | destructive | Delete a report and its findings                 |
+| `delete_ghostwriter_project`    | destructive | Delete a project, its reports, and their findings |
+| `delete_ghostwriter_client`     | destructive | Delete a client and everything beneath it        |
+| `delete_ghostwriter_finding`    | destructive | Delete a findings-library entry                  |
 | `explain_workflow`              | read        | Get a complete guide on the recommended workflow |
 
 The **kind** column mirrors the MCP tool annotations the server publishes
@@ -267,6 +273,28 @@ it accepts `title`, `description`, `impact`, `mitigation`, `references`,
 `findingGuidance`, `hostDetectionTechniques`, `networkDetectionTechniques`,
 `severityId`, `findingTypeId`, `cvssScore`, `cvssVector`, `complete`, and
 `position`. Only the fields you pass are changed, and passing `""` clears one.
+
+### Deleting data
+
+Deletions are permanent - Ghostwriter has no undo - so every delete tool requires
+a `confirmId` argument matching the id being deleted. A single wrong argument
+cannot destroy anything:
+
+```text
+delete_ghostwriter_client(clientId=6, confirmId=6)   # deletes
+delete_ghostwriter_client(clientId=6)                # refused
+delete_ghostwriter_client(clientId=6, confirmId=7)   # refused
+```
+
+Each tool deletes one row by primary key and returns the row it removed, so you
+can confirm afterwards what went. Deleting a nonexistent id is an error rather
+than a silent success.
+
+Mind the cascades: deleting a client removes its projects, their reports, and
+those reports' findings. To clean up a set of test data predictably, work bottom
+up - report findings, then reports, then projects, then clients, then library
+entries. Deleting a report finding only removes the report's copy, leaving the
+library entry available to attach again.
 
 > **Always search before creating** to avoid duplicates:
 >
