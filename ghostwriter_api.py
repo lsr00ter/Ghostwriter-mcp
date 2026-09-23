@@ -369,7 +369,7 @@ async def search_clients(search_term: str | None = None, limit: int | None = Non
         shortName
         codename
         address
-        note
+        description
       }
     }
     """
@@ -381,7 +381,7 @@ async def search_clients(search_term: str | None = None, limit: int | None = Non
         client["name"] = client.get("name") or ""
         client["codename"] = client.get("codename") or ""
         client["address"] = client.get("address") or ""
-        client["note"] = client.get("note") or ""
+        client["description"] = client.get("description") or ""
         client["shortName"] = client.get("shortName") or ""
     return result
 
@@ -402,7 +402,7 @@ async def search_projects(search_term: str | None = None, limit: int | None = No
         clientId
         startDate
         endDate
-        note
+        description
         projectType {
           projectType
         }
@@ -418,7 +418,7 @@ async def search_projects(search_term: str | None = None, limit: int | None = No
 
     projects = (result.get("data") or {}).get("project") or []
     for project in projects:
-        project["note"] = project.get("note") or ""
+        project["description"] = project.get("description") or ""
         project["startDate"] = project.get("startDate") or ""
         project["endDate"] = project.get("endDate") or ""
         if not project.get("projectType"):
@@ -437,6 +437,8 @@ async def get_client_by_id(client_id: int):
         name
         shortName
         codename
+        address
+        description
       }
     }
     """
@@ -454,6 +456,7 @@ async def get_project_by_id(project_id: int):
         clientId
         startDate
         endDate
+        description
         projectType {
           projectType
         }
@@ -521,7 +524,7 @@ async def create_client(
     short_name: str,
     codename: str,
     address: str | None = None,
-    note: str | None = None,
+    description: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ):
     """Create a client and return the inserted row."""
@@ -532,10 +535,10 @@ async def create_client(
     }
     if address is not None:
         obj["address"] = address
-    if note is not None:
-        obj["note"] = note
+    if description is not None:
+        obj["description"] = description
     if extra_fields:
-        obj["extra_fields"] = extra_fields
+        obj["extraFields"] = extra_fields
 
     query = """
     mutation CreateClient($object: client_insert_input!) {
@@ -545,7 +548,7 @@ async def create_client(
         codename
         shortName
         address
-        note
+        description
       }
     }
     """
@@ -583,7 +586,7 @@ async def create_project(
         "endDate": end,
     }
     if extra_fields:
-        obj["extra_fields"] = extra_fields
+        obj["extraFields"] = extra_fields
 
     query = """
     mutation CreateProject($object: project_insert_input!) {
@@ -631,9 +634,10 @@ async def create_finding(
 ):
     """Create a finding in the Ghostwriter findings library.
 
-    Field names mirror ``finding_insert_input`` (note ``cvss_score`` /
-    ``cvss_vector``). The library has no ``affectedEntities`` field; that
-    belongs to a *reported* finding (see :func:`update_report_finding`).
+    Field names mirror this deployment's ``finding_insert_input`` (note
+    ``cvssScore`` / ``cvssVector``). The library has no ``affectedEntities``
+    field; that belongs to a *reported* finding (see
+    :func:`update_report_finding`).
     """
     obj: dict[str, Any] = {
         "title": _require_text(title, "title"),
@@ -656,13 +660,13 @@ async def create_finding(
             raise GhostwriterValidationError(
                 f"cvssScore must be between 0.0 and 10.0, got {score}"
             )
-        obj["cvss_score"] = score
+        obj["cvssScore"] = score
     if cvssVector:
-        obj["cvss_vector"] = cvssVector
+        obj["cvssVector"] = cvssVector
     if replication_steps is not None:
         obj["replication_steps"] = replication_steps
     if extra_fields:
-        obj["extra_fields"] = extra_fields
+        obj["extraFields"] = extra_fields
 
     query = """
     mutation CreateFinding($object: finding_insert_input!) {

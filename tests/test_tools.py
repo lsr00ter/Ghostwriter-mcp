@@ -113,7 +113,7 @@ class TestCreateTools(ToolTestCase):
                         "codename": "ACME",
                         "shortName": "AC",
                         "address": None,
-                        "note": None,
+                        "description": None,
                     }
                 }
             }

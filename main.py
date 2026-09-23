@@ -203,7 +203,7 @@ async def search_ghostwriter_clients(
                 "codename": c["codename"],
                 "shortName": c.get("shortName", ""),
                 "address": c.get("address", ""),
-                "note": c.get("note", ""),
+                "description": c.get("description", ""),
                 "_workflow_note": f"Use id={c['id']} as clientId for create_ghostwriter_project",
             }
             for c in clients
@@ -241,7 +241,7 @@ async def search_ghostwriter_projects(
                 "projectType": (p.get("projectType") or {}).get("projectType", "Unknown"),
                 "startDate": p.get("startDate", ""),
                 "endDate": p.get("endDate", ""),
-                "note": p.get("note", ""),
+                "description": p.get("description", ""),
                 "clientName": (p.get("client") or {}).get("name", ""),
                 "clientCodename": (p.get("client") or {}).get("codename", ""),
                 "_workflow_note": f"Use id={p['id']} as projectId for create_ghostwriter_report",
@@ -258,9 +258,9 @@ async def search_ghostwriter_projects(
     description="Fetch a Ghostwriter client directly by ID. Returns full client details.",
     annotations=READ_ONLY,
 )
-async def get_ghostwriter_client_by_id_tool(client_id: int) -> list[dict[str, Any]]:
+async def get_ghostwriter_client_by_id_tool(clientId: int) -> list[dict[str, Any]]:
     try:
-        results = await get_client_by_id(client_id)
+        results = await get_client_by_id(clientId)
         clients = (results.get("data") or {}).get("client") or []
         return [
             {
@@ -269,7 +269,7 @@ async def get_ghostwriter_client_by_id_tool(client_id: int) -> list[dict[str, An
                 "codename": x["codename"],
                 "shortName": x.get("shortName", ""),
                 "address": x.get("address", ""),
-                "note": x.get("note", ""),
+                "description": x.get("description", ""),
             }
             for x in clients
         ]
@@ -283,9 +283,9 @@ async def get_ghostwriter_client_by_id_tool(client_id: int) -> list[dict[str, An
     description="Fetch a Ghostwriter project directly by ID. Returns project details.",
     annotations=READ_ONLY,
 )
-async def get_ghostwriter_project_by_id_tool(project_id: int) -> list[dict[str, Any]]:
+async def get_ghostwriter_project_by_id_tool(projectId: int) -> list[dict[str, Any]]:
     try:
-        result = await get_project_by_id(project_id)
+        result = await get_project_by_id(projectId)
         projects = (result.get("data") or {}).get("project") or []
         return [
             {
@@ -295,7 +295,7 @@ async def get_ghostwriter_project_by_id_tool(project_id: int) -> list[dict[str, 
                 "projectType": (w.get("projectType") or {}).get("projectType", "Unknown"),
                 "startDate": w.get("startDate", ""),
                 "endDate": w.get("endDate", ""),
-                "note": w.get("note", ""),
+                "description": w.get("description", ""),
                 "clientName": (w.get("client") or {}).get("name", ""),
                 "clientCodename": (w.get("client") or {}).get("codename", ""),
                 "_workflow_note": f"Use id={w['id']} as projectId for create_ghostwriter_report",
@@ -312,9 +312,9 @@ async def get_ghostwriter_project_by_id_tool(project_id: int) -> list[dict[str, 
     description="Fetch a Ghostwriter report directly by ID. Returns report details.",
     annotations=READ_ONLY,
 )
-async def get_ghostwriter_report_by_id_tool(report_id: int) -> list[dict[str, Any]]:
+async def get_ghostwriter_report_by_id_tool(reportId: int) -> list[dict[str, Any]]:
     try:
-        result = await get_report_by_id(report_id)
+        result = await get_report_by_id(reportId)
         reports = (result.get("data") or {}).get("report") or []
         return [
             {
@@ -356,24 +356,26 @@ async def generate_ghostwriter_codename() -> dict[str, str]:
 
     REQUIRED PARAMETERS:
     - name: Full client name (e.g., "Acme Corporation")
-    - short_name: Abbreviated name (e.g., "Acme")
+    - shortName: Abbreviated name (e.g., "Acme")
     - codename: Unique identifier (e.g., "ACME2024")
 
     OPTIONAL PARAMETERS (can be omitted):
     - address: Client's physical address
-    - note: Additional notes about the client
+    - description: Additional notes about the client
     """,
     annotations=WRITE,
 )
 async def create_ghostwriter_client(
     name: str,
-    short_name: str,
+    shortName: str,
     codename: str,
     address: str | None = None,
-    note: str | None = None,
+    description: str | None = None,
 ) -> dict[str, Any]:
     try:
-        client_data = await create_client(name, short_name, codename, address, note)
+        client_data = await create_client(
+            name, shortName, codename, address, description
+        )
 
         if not client_data:
             raise GhostwriterError("Failed to create client - no data returned")
@@ -384,7 +386,7 @@ async def create_ghostwriter_client(
             "shortName": client_data.get("shortName", ""),
             "codename": client_data["codename"],
             "address": client_data.get("address", ""),
-            "note": client_data.get("note", ""),
+            "description": client_data.get("description", ""),
             "_workflow_note": "Save this 'id' as clientId for create_ghostwriter_project",
         }
 
@@ -471,7 +473,7 @@ async def create_ghostwriter_report(
         response = {
             "id": report["id"],
             "title": report["title"],
-            "project_id": report["projectId"],
+            "projectId": report["projectId"],
             "last_update": report["last_update"],
             "_workflow_note": "Save this 'id' as reportId for attach_finding_to_report",
         }
@@ -488,7 +490,7 @@ async def create_ghostwriter_report(
     description=(
         "Create a new finding in the Ghostwriter findings library. "
         "Severity falls back to GHOSTWRITER_DEFAULT_SEVERITY_ID when omitted. "
-        "'extra_fields' maps to Ghostwriter's user-defined Extra Fields (v4.1+). "
+        "'extraFields' maps to Ghostwriter's user-defined Extra Fields (v4.1+). "
         "Library findings have no 'affectedEntities' field - set that on the "
         "report finding via update_report_finding instead."
     ),
@@ -502,7 +504,7 @@ async def create_ghostwriter_finding(
     cvssScore: float | None = None,
     cvssVector: str | None = None,
     replication_steps: str | None = None,
-    extra_fields: dict | None = None,
+    extraFields: dict | None = None,
 ) -> dict[str, Any]:
     try:
         result = await create_finding(
@@ -513,7 +515,7 @@ async def create_ghostwriter_finding(
             cvssScore=cvssScore,
             cvssVector=cvssVector,
             replication_steps=replication_steps,
-            extra_fields=extra_fields,
+            extraFields=extraFields,
         )
 
         if not result:
