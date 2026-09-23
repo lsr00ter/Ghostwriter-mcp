@@ -410,6 +410,8 @@ async def generate_ghostwriter_codename() -> dict[str, str]:
     OPTIONAL PARAMETERS (can be omitted):
     - address: Client's physical address
     - description: Additional notes about the client
+    - timezone: Client's timezone as an IANA name (e.g., "America/New_York")
+    - extraFields: Values for custom client fields configured on this deployment
     """,
     annotations=WRITE,
 )
@@ -419,10 +421,18 @@ async def create_ghostwriter_client(
     codename: str,
     address: str | None = None,
     description: str | None = None,
+    timezone: str | None = None,
+    extraFields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         client_data = await create_client(
-            name, shortName, codename, address, description
+            name,
+            shortName,
+            codename,
+            address,
+            description,
+            timezone=timezone,
+            extra_fields=extraFields,
         )
 
         if not client_data:
@@ -435,6 +445,7 @@ async def create_ghostwriter_client(
             "codename": client_data["codename"],
             "address": client_data.get("address", ""),
             "description": client_data.get("description", ""),
+            "timezone": client_data.get("timezone", ""),
             "_workflow_note": "Save this 'id' as clientId for create_ghostwriter_project",
         }
 
@@ -462,6 +473,10 @@ async def create_ghostwriter_client(
       Web Application Assessment).
       TIP: call list_ghostwriter_lookups to get the valid ids for this deployment.
     - 'startDate' and 'endDate' are ISO dates (YYYY-MM-DD) and default to today
+    - 'description': scope and background for the engagement
+    - 'slackChannel': Slack channel for project notifications (e.g., "#acme-redteam")
+    - 'timezone': engagement timezone as an IANA name (e.g., "America/New_York")
+    - 'extraFields': values for custom project fields configured on this deployment
     """,
     annotations=WRITE,
 )
@@ -471,10 +486,22 @@ async def create_ghostwriter_project(
     projectTypeId: int | None = None,
     startDate: str | None = None,
     endDate: str | None = None,
+    description: str | None = None,
+    slackChannel: str | None = None,
+    timezone: str | None = None,
+    extraFields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         result = await create_project(
-            clientId, codename, projectTypeId, startDate, endDate
+            clientId,
+            codename,
+            projectTypeId,
+            startDate,
+            endDate,
+            description=description,
+            slackChannel=slackChannel,
+            timezone=timezone,
+            extra_fields=extraFields,
         )
         project = (result.get("data") or {}).get("insert_project_one")
         if not project:
@@ -483,8 +510,13 @@ async def create_ghostwriter_project(
         response = {
             "id": project["id"],
             "codename": project["codename"],
+            "clientId": project.get("clientId"),
+            "projectTypeId": project.get("projectTypeId"),
             "startDate": project["startDate"],
             "endDate": project["endDate"],
+            "description": project.get("description") or "",
+            "slackChannel": project.get("slackChannel") or "",
+            "timezone": project.get("timezone") or "",
             "_workflow_note": "Save this 'id' as projectId for create_ghostwriter_report",
         }
 
@@ -538,13 +570,32 @@ async def create_ghostwriter_report(
 @server.tool(
     name="create_ghostwriter_finding",
     title="Create finding",
-    description=(
-        "Create a new finding in the Ghostwriter findings library. "
-        "Severity falls back to GHOSTWRITER_DEFAULT_SEVERITY_ID when omitted. "
-        "'extraFields' maps to Ghostwriter's user-defined Extra Fields (v4.1+). "
-        "Library findings have no 'affectedEntities' field - set that on the "
-        "report finding via update_report_finding instead."
-    ),
+    description="""Create a new finding in the Ghostwriter findings library.
+
+    RETURNS: findingId (pass it to attach_finding_to_report)
+    TIP: call list_ghostwriter_lookups for valid findingTypeId and severityId values.
+
+    A library finding is a reusable template. Attaching it to a report copies it,
+    and engagement-specific details belong on that copy via update_report_finding
+    - including 'affectedEntities', which the library has no field for.
+
+    Parameters:
+    - 'title', 'description': required. Ghostwriter renders these as rich text,
+      so HTML such as <p> and <ul> is supported.
+    - 'severityId': falls back to GHOSTWRITER_DEFAULT_SEVERITY_ID when omitted
+    - 'cvssScore': CVSS base score between 0.0 and 10.0
+    - 'cvssVector': CVSS vector string (e.g., "CVSS:3.1/AV:N/AC:L/...")
+    - 'replication_steps': how to reproduce the finding
+    - 'impact': consequences if the finding is exploited
+    - 'mitigation': how to remediate it
+    - 'references': supporting links or advisories
+    - 'findingGuidance': internal notes for the operator writing the report,
+      not intended for the client-facing document
+    - 'hostDetectionTechniques', 'networkDetectionTechniques': how a defender
+      could detect the activity
+    - 'extraFields': values for custom finding fields configured on this
+      deployment (Ghostwriter v4.1+)
+    """,
     annotations=WRITE,
 )
 async def create_ghostwriter_finding(
@@ -555,6 +606,12 @@ async def create_ghostwriter_finding(
     cvssScore: float | None = None,
     cvssVector: str | None = None,
     replication_steps: str | None = None,
+    impact: str | None = None,
+    mitigation: str | None = None,
+    references: str | None = None,
+    findingGuidance: str | None = None,
+    hostDetectionTechniques: str | None = None,
+    networkDetectionTechniques: str | None = None,
     extraFields: dict | None = None,
 ) -> dict[str, Any]:
     try:
@@ -566,6 +623,12 @@ async def create_ghostwriter_finding(
             cvssScore=cvssScore,
             cvssVector=cvssVector,
             replication_steps=replication_steps,
+            impact=impact,
+            mitigation=mitigation,
+            references=references,
+            findingGuidance=findingGuidance,
+            hostDetectionTechniques=hostDetectionTechniques,
+            networkDetectionTechniques=networkDetectionTechniques,
             extra_fields=extraFields,
         )
 
@@ -575,7 +638,19 @@ async def create_ghostwriter_finding(
         return {
             "id": result.get("id"),
             "title": result.get("title"),
-            "description": result.get("description", ""),
+            "description": result.get("description") or "",
+            "severityId": result.get("severityId"),
+            "findingTypeId": result.get("findingTypeId"),
+            "cvssScore": result.get("cvssScore"),
+            "cvssVector": result.get("cvssVector") or "",
+            "impact": result.get("impact") or "",
+            "mitigation": result.get("mitigation") or "",
+            "references": result.get("references") or "",
+            "findingGuidance": result.get("findingGuidance") or "",
+            "replication_steps": result.get("replication_steps") or "",
+            "hostDetectionTechniques": result.get("hostDetectionTechniques") or "",
+            "networkDetectionTechniques": result.get("networkDetectionTechniques") or "",
+            "_workflow_note": "Save this 'id' as the finding for attach_finding_to_report",
         }
     except Exception as exc:  # noqa: BLE001
         raise _tool_error("create_ghostwriter_finding", exc) from exc
@@ -638,18 +713,33 @@ async def list_report_finding_titles_tool(reportId: int) -> list[dict[str, Any]]
 @server.tool(
     name="update_report_finding",
     title="Update report finding",
-    description="""Update the replication steps and/or affected entities of a reported finding.
+    description="""Edit the report-specific copy of an attached finding.
 
-    Note: This replaces the current text, it does not append to it.
+    Note: This replaces the current values, it does not append to them. Passing
+    an empty string clears a field. Only the fields you pass are changed.
 
-    DEPENDENCY: STEP 5 in the workflow.
+    DEPENDENCY: final step in the workflow.
     REQUIRES: reportedFindingId from attach_finding_to_report.
+
+    Attaching a library finding copies it into the report, and this tool edits
+    that copy, so tailoring a finding to the engagement never alters the shared
+    library entry. Use it to record what was actually observed and, when the
+    engagement context warrants it, to re-rate the finding for this report.
 
     Parameters:
     - 'reportedFindingId': the reportedFindingId returned by attach_finding_to_report
       (the report-specific row, NOT the findings-library id)
-    - 'replicationSteps': how to reproduce the finding (optional)
-    - 'affectedEntities': assets or hosts affected by the finding (optional)
+    - 'replicationSteps': how to reproduce the finding
+    - 'affectedEntities': assets or hosts affected (report-specific; the library
+      finding has no such field)
+    - 'title', 'description': override the copied text for this report
+    - 'impact', 'mitigation', 'references', 'findingGuidance': narrative fields
+    - 'hostDetectionTechniques', 'networkDetectionTechniques': detection guidance
+    - 'severityId', 'findingTypeId': re-rate or re-categorise for this report
+      (call list_ghostwriter_lookups for valid ids)
+    - 'cvssScore' (0.0-10.0), 'cvssVector': engagement-specific scoring
+    - 'complete': mark the finding as finished
+    - 'position': ordering of this finding within its severity group
     """,
     annotations=DESTRUCTIVE_WRITE,
 )
@@ -657,12 +747,40 @@ async def update_report_finding_tool(
     reportedFindingId: int,
     replicationSteps: str | None = None,
     affectedEntities: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    impact: str | None = None,
+    mitigation: str | None = None,
+    references: str | None = None,
+    findingGuidance: str | None = None,
+    hostDetectionTechniques: str | None = None,
+    networkDetectionTechniques: str | None = None,
+    severityId: int | None = None,
+    findingTypeId: int | None = None,
+    cvssScore: float | None = None,
+    cvssVector: str | None = None,
+    complete: bool | None = None,
+    position: int | None = None,
 ) -> dict[str, Any]:
     try:
         result = await update_report_finding(
             reportedFindingId=int(reportedFindingId),
             replicationSteps=replicationSteps,
             affectedEntities=affectedEntities,
+            title=title,
+            description=description,
+            impact=impact,
+            mitigation=mitigation,
+            references=references,
+            findingGuidance=findingGuidance,
+            hostDetectionTechniques=hostDetectionTechniques,
+            networkDetectionTechniques=networkDetectionTechniques,
+            severityId=severityId,
+            findingTypeId=findingTypeId,
+            cvssScore=cvssScore,
+            cvssVector=cvssVector,
+            complete=complete,
+            position=position,
         )
         updated = (result.get("data") or {}).get("update_reportedFinding")
         if not updated:

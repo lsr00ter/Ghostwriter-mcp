@@ -363,6 +363,111 @@ class TestSchemaConformance(ApiTestCase):
             await gw.update_report_finding(999999, replicationSteps="a")
         self.assertIn("999999", str(ctx.exception))
 
+    async def test_update_report_finding_sends_every_supported_field(self):
+        """Each argument must reach _set with the right column and GraphQL type."""
+        self.queue({"data": {"update_reportedFinding": {"affected_rows": 1, "returning": []}}})
+        await gw.update_report_finding(
+            1,
+            replicationSteps="steps",
+            affectedEntities="host",
+            title="t",
+            description="d",
+            impact="i",
+            mitigation="m",
+            references="r",
+            findingGuidance="g",
+            hostDetectionTechniques="hd",
+            networkDetectionTechniques="nd",
+            severityId=3,
+            findingTypeId=4,
+            cvssScore=7.5,
+            cvssVector="CVSS:3.1/AV:N",
+            complete=True,
+            position=2,
+        )
+        body = self.last_body()
+        query = body["query"]
+        set_block = re.search(r"_set:\s*\{(.*?)\}", query, re.S).group(1)
+        columns = re.findall(r"(\w+)\s*:", set_block)
+        self.assert_keys_valid(columns, "reportedFinding_set_input")
+        # replicationSteps is the argument; replication_steps is the column
+        self.assertIn("replication_steps: $replicationSteps", set_block)
+        self.assertIn("$severityId: bigint", query)
+        self.assertIn("$cvssScore: float8", query)
+        self.assertIn("$complete: Boolean", query)
+        self.assertIn("$position: Int", query)
+        self.assertEqual(body["variables"]["cvssScore"], 7.5)
+        self.assertIs(body["variables"]["complete"], True)
+
+    async def test_update_report_finding_omits_untouched_fields(self):
+        self.queue({"data": {"update_reportedFinding": {"affected_rows": 1, "returning": []}}})
+        await gw.update_report_finding(1, impact="only impact")
+        query = self.last_body()["query"]
+        self.assertIn("impact: $impact", query)
+        for absent in ("severityId", "title", "replication_steps", "affectedEntities"):
+            self.assertNotIn(absent, query)
+
+    async def test_update_report_finding_can_clear_a_field(self):
+        """An empty string is a deliberate edit; only None means "leave alone"."""
+        self.queue({"data": {"update_reportedFinding": {"affected_rows": 1, "returning": []}}})
+        await gw.update_report_finding(1, affectedEntities="")
+        self.assertEqual(self.last_body()["variables"]["affectedEntities"], "")
+
+    async def test_update_report_finding_validates_new_numeric_fields(self):
+        for kwargs in (
+            {"cvssScore": 10.1},
+            {"severityId": 0},
+            {"findingTypeId": -1},
+            {"position": 0},
+        ):
+            with self.subTest(**kwargs):
+                with self.assertRaises(gw.GhostwriterValidationError):
+                    await gw.update_report_finding(1, **kwargs)
+
+    async def test_create_finding_sends_all_narrative_fields(self):
+        self.queue({"data": {"insert_finding_one": {"id": 1}}})
+        await gw.create_finding(
+            "t",
+            "d",
+            impact="i",
+            mitigation="m",
+            references="r",
+            findingGuidance="g",
+            hostDetectionTechniques="hd",
+            networkDetectionTechniques="nd",
+        )
+        obj = self.last_body()["variables"]["object"]
+        self.assert_keys_valid(obj, "finding_insert_input")
+        self.assertEqual(obj["impact"], "i")
+        self.assertEqual(obj["mitigation"], "m")
+        self.assertEqual(obj["references"], "r")
+        self.assertEqual(obj["findingGuidance"], "g")
+        self.assertEqual(obj["hostDetectionTechniques"], "hd")
+        self.assertEqual(obj["networkDetectionTechniques"], "nd")
+
+    async def test_create_project_sends_new_optional_fields(self):
+        self.queue({"data": {"insert_project_one": {"id": 1}}})
+        await gw.create_project(
+            1,
+            "code",
+            projectTypeId=2,
+            description="scope",
+            slackChannel="#chan",
+            timezone="America/New_York",
+        )
+        obj = self.last_body()["variables"]["object"]
+        self.assert_keys_valid(obj, "project_insert_input")
+        self.assertEqual(obj["description"], "scope")
+        self.assertEqual(obj["slackChannel"], "#chan")
+        self.assertEqual(obj["timezone"], "America/New_York")
+
+    async def test_create_client_sends_timezone(self):
+        self.queue({"data": {"insert_client_one": {"id": 1}}})
+        await gw.create_client("Acme", "AC", "ACME", timezone="UTC")
+        obj = self.last_body()["variables"]["object"]
+        self.assert_keys_valid(obj, "client_insert_input")
+        self.assertEqual(obj["timezone"], "UTC")
+
     async def test_list_lookups_returns_all_three_tables(self):
         self.queue(
             {

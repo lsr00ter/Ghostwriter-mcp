@@ -269,6 +269,33 @@ def _require_text(value: Any, field: str) -> str:
     return text
 
 
+def _set_optional_text(obj: dict[str, Any], **fields: str | None) -> dict[str, Any]:
+    """Copy the non-``None`` keyword arguments into ``obj`` unchanged.
+
+    Empty strings are kept: clearing a field is a legitimate edit, and only
+    ``None`` means "leave this alone".
+    """
+    for name, value in fields.items():
+        if value is not None:
+            obj[name] = value
+    return obj
+
+
+def _require_cvss_score(value: Any) -> float:
+    """Validate a CVSS base score, which is defined only over 0.0-10.0."""
+    try:
+        score = float(value)
+    except (TypeError, ValueError) as exc:
+        raise GhostwriterValidationError(
+            f"cvssScore must be a number, got {value!r}"
+        ) from exc
+    if not 0.0 <= score <= 10.0:
+        raise GhostwriterValidationError(
+            f"cvssScore must be between 0.0 and 10.0, got {score}"
+        )
+    return score
+
+
 def _require_positive_int(value: Any, field: str) -> int:
     if isinstance(value, bool):
         raise GhostwriterValidationError(f"{field} must be an integer, got {value!r}")
@@ -529,6 +556,7 @@ async def create_client(
     codename: str,
     address: str | None = None,
     description: str | None = None,
+    timezone: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ):
     """Create a client and return the inserted row."""
@@ -537,10 +565,9 @@ async def create_client(
         "shortName": _require_text(short_name, "short_name"),
         "codename": _require_text(codename, "codename"),
     }
-    if address is not None:
-        obj["address"] = address
-    if description is not None:
-        obj["description"] = description
+    _set_optional_text(
+        obj, address=address, description=description, timezone=timezone
+    )
     if extra_fields:
         obj["extraFields"] = extra_fields
 
@@ -553,6 +580,7 @@ async def create_client(
         shortName
         address
         description
+        timezone
       }
     }
     """
@@ -566,6 +594,9 @@ async def create_project(
     projectTypeId: int | None = None,
     startDate: str | None = None,
     endDate: str | None = None,
+    description: str | None = None,
+    slackChannel: str | None = None,
+    timezone: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ):
     """Create a project under a client and return the inserted row.
@@ -589,6 +620,12 @@ async def create_project(
         "startDate": start,
         "endDate": end,
     }
+    _set_optional_text(
+        obj,
+        description=description,
+        slackChannel=slackChannel,
+        timezone=timezone,
+    )
     if extra_fields:
         obj["extraFields"] = extra_fields
 
@@ -599,6 +636,11 @@ async def create_project(
         codename
         startDate
         endDate
+        description
+        slackChannel
+        timezone
+        projectTypeId
+        clientId
       }
     }
     """
@@ -634,6 +676,12 @@ async def create_finding(
     cvssScore: float | None = None,
     cvssVector: str | None = None,
     replication_steps: str | None = None,
+    impact: str | None = None,
+    mitigation: str | None = None,
+    references: str | None = None,
+    findingGuidance: str | None = None,
+    hostDetectionTechniques: str | None = None,
+    networkDetectionTechniques: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ):
     """Create a finding in the Ghostwriter findings library.
@@ -654,21 +702,20 @@ async def create_finding(
     if severityId is not None:
         obj["severityId"] = _require_positive_int(severityId, "severityId")
     if cvssScore is not None:
-        try:
-            score = float(cvssScore)
-        except (TypeError, ValueError) as exc:
-            raise GhostwriterValidationError(
-                f"cvssScore must be a number, got {cvssScore!r}"
-            ) from exc
-        if not 0.0 <= score <= 10.0:
-            raise GhostwriterValidationError(
-                f"cvssScore must be between 0.0 and 10.0, got {score}"
-            )
-        obj["cvssScore"] = score
+        obj["cvssScore"] = _require_cvss_score(cvssScore)
     if cvssVector:
         obj["cvssVector"] = cvssVector
     if replication_steps is not None:
         obj["replication_steps"] = replication_steps
+    _set_optional_text(
+        obj,
+        impact=impact,
+        mitigation=mitigation,
+        references=references,
+        findingGuidance=findingGuidance,
+        hostDetectionTechniques=hostDetectionTechniques,
+        networkDetectionTechniques=networkDetectionTechniques,
+    )
     if extra_fields:
         obj["extraFields"] = extra_fields
 
@@ -678,6 +725,17 @@ async def create_finding(
         id
         title
         description
+        severityId
+        findingTypeId
+        cvssScore
+        cvssVector
+        impact
+        mitigation
+        references
+        findingGuidance
+        replication_steps
+        hostDetectionTechniques
+        networkDetectionTechniques
       }
     }
     """
@@ -705,43 +763,115 @@ async def update_report_finding(
     reportedFindingId: int,
     replicationSteps: str | None = None,
     affectedEntities: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    impact: str | None = None,
+    mitigation: str | None = None,
+    references: str | None = None,
+    findingGuidance: str | None = None,
+    hostDetectionTechniques: str | None = None,
+    networkDetectionTechniques: str | None = None,
+    severityId: int | None = None,
+    findingTypeId: int | None = None,
+    cvssScore: float | None = None,
+    cvssVector: str | None = None,
+    complete: bool | None = None,
+    position: int | None = None,
 ):
-    """Update replication steps and/or affected entities of a reported finding.
+    """Update the report-specific copy of a finding.
 
     ``reportedFindingId`` is the ``id`` of the ``reportedFinding`` row returned
-    by ``attachFinding`` -- not a findings-library id. The provided values
-    replace the existing text; they are not appended.
+    by ``attachFinding`` -- not a findings-library id. Editing it changes only
+    this report; the findings library is left alone. Provided values replace the
+    existing ones and are not appended, and passing ``""`` clears a field.
+
+    Only the fields you pass are sent, and only those come back in
+    ``returning``.
     """
     variables: dict[str, Any] = {
         "reportedFindingId": _require_positive_int(
             reportedFindingId, "reportedFindingId"
         )
     }
+
+    # python argument -> (column in reportedFinding_set_input, GraphQL type)
+    supported: dict[str, tuple[str, str]] = {
+        "replicationSteps": ("replication_steps", "String"),
+        "affectedEntities": ("affectedEntities", "String"),
+        "title": ("title", "String"),
+        "description": ("description", "String"),
+        "impact": ("impact", "String"),
+        "mitigation": ("mitigation", "String"),
+        "references": ("references", "String"),
+        "findingGuidance": ("findingGuidance", "String"),
+        "hostDetectionTechniques": ("hostDetectionTechniques", "String"),
+        "networkDetectionTechniques": ("networkDetectionTechniques", "String"),
+        "severityId": ("severityId", "bigint"),
+        "findingTypeId": ("findingTypeId", "bigint"),
+        "cvssScore": ("cvssScore", "float8"),
+        "cvssVector": ("cvssVector", "String"),
+        "complete": ("complete", "Boolean"),
+        "position": ("position", "Int"),
+    }
+    given: dict[str, Any] = {
+        "replicationSteps": replicationSteps,
+        "affectedEntities": affectedEntities,
+        "title": title,
+        "description": description,
+        "impact": impact,
+        "mitigation": mitigation,
+        "references": references,
+        "findingGuidance": findingGuidance,
+        "hostDetectionTechniques": hostDetectionTechniques,
+        "networkDetectionTechniques": networkDetectionTechniques,
+        "severityId": severityId,
+        "findingTypeId": findingTypeId,
+        "cvssScore": cvssScore,
+        "cvssVector": cvssVector,
+        "complete": complete,
+        "position": position,
+    }
+
+    if severityId is not None:
+        given["severityId"] = _require_positive_int(severityId, "severityId")
+    if findingTypeId is not None:
+        given["findingTypeId"] = _require_positive_int(findingTypeId, "findingTypeId")
+    if cvssScore is not None:
+        given["cvssScore"] = _require_cvss_score(cvssScore)
+    if position is not None:
+        given["position"] = _require_positive_int(position, "position")
+    if complete is not None:
+        given["complete"] = bool(complete)
+
+    declarations = ["$reportedFindingId: bigint!"]
     set_fields = []
-    if replicationSteps is not None:
-        set_fields.append("replication_steps: $replicationSteps")
-        variables["replicationSteps"] = replicationSteps
-    if affectedEntities is not None:
-        set_fields.append("affectedEntities: $affectedEntities")
-        variables["affectedEntities"] = affectedEntities
+    selection = ["id"]
+    for name, value in given.items():
+        if value is None:
+            continue
+        column, gql_type = supported[name]
+        declarations.append(f"${name}: {gql_type}")
+        set_fields.append(f"{column}: ${name}")
+        selection.append(column)
+        variables[name] = value
 
     if not set_fields:
         raise GhostwriterValidationError(
-            "At least one of replicationSteps or affectedEntities must be provided."
+            "Provide at least one field to update, e.g. replicationSteps, "
+            "affectedEntities, severityId or impact."
         )
 
-    # Field names are hardcoded above; only their presence varies.
+    # Variable and column names come from ``supported``, never from caller input.
+    selected = "\n          ".join(selection)
     query = f"""
-    mutation updateReportedFinding($reportedFindingId: bigint!, $replicationSteps: String, $affectedEntities: String) {{
+    mutation updateReportedFinding({", ".join(declarations)}) {{
       update_reportedFinding(
         where: {{id: {{_eq: $reportedFindingId}}}},
         _set: {{ {", ".join(set_fields)} }}
       ) {{
         affected_rows
         returning {{
-          id
-          replication_steps
-          affectedEntities
+          {selected}
         }}
       }}
     }}

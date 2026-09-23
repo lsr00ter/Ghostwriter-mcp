@@ -258,6 +258,37 @@ class TestLookupTool(ToolTestCase):
 
 
 class TestUpdateTool(ToolTestCase):
+    async def test_tool_exposes_every_updatable_column(self):
+        """The tool surface must not lag behind reportedFinding_set_input.
+
+        Only two of the eighteen settable columns were reachable at first, so an
+        attached finding could not be tailored to the engagement. Editable
+        content columns are pinned here; plumbing columns are deliberately out.
+        """
+        import inspect
+
+        params = set(inspect.signature(main.update_report_finding_tool).parameters)
+        expected = {
+            "reportedFindingId",
+            "replicationSteps",
+            "affectedEntities",
+            "title",
+            "description",
+            "impact",
+            "mitigation",
+            "references",
+            "findingGuidance",
+            "hostDetectionTechniques",
+            "networkDetectionTechniques",
+            "severityId",
+            "findingTypeId",
+            "cvssScore",
+            "cvssVector",
+            "complete",
+            "position",
+        }
+        self.assertEqual(params, expected)
+
     async def test_zero_rows_raises_tool_error(self):
         """A silent no-op must not be reported as a successful update."""
         self.queue({"data": {"update_reportedFinding": {"affected_rows": 0, "returning": []}}})
@@ -281,6 +312,93 @@ class TestUpdateTool(ToolTestCase):
         self.assertEqual(result["affected_rows"], 1)
         self.assertEqual(result["returning"][0]["replication_steps"], "x")
         self.assertEqual(result["returning"][0]["affectedEntities"], "h")
+
+    async def test_rerating_sends_only_the_rating_fields(self):
+        self.queue(
+            {
+                "data": {
+                    "update_reportedFinding": {
+                        "affected_rows": 1,
+                        "returning": [{"id": 8, "severityId": 5, "cvssScore": 9.8}],
+                    }
+                }
+            }
+        )
+        await main.update_report_finding_tool(8, severityId=5, cvssScore=9.8)
+        query = json.loads(self.requests[0].content)["query"]
+        self.assertIn("severityId: $severityId", query)
+        self.assertIn("cvssScore: $cvssScore", query)
+        self.assertNotIn("replication_steps", query)
+
+
+class TestWriteToolOutputs(ToolTestCase):
+    async def test_project_output_includes_new_fields(self):
+        self.queue(
+            {
+                "data": {
+                    "insert_project_one": {
+                        "id": 9,
+                        "codename": "CODE",
+                        "clientId": 3,
+                        "projectTypeId": 2,
+                        "startDate": "2026-01-01",
+                        "endDate": "2026-01-31",
+                        "description": "scope",
+                        "slackChannel": "#chan",
+                        "timezone": None,
+                    }
+                }
+            }
+        )
+        result = await main.create_ghostwriter_project(
+            3, "CODE", 2, description="scope", slackChannel="#chan"
+        )
+        self.assertEqual(result["description"], "scope")
+        self.assertEqual(result["slackChannel"], "#chan")
+        self.assertEqual(result["projectTypeId"], 2)
+        # null must not leak through as None
+        self.assertEqual(result["timezone"], "")
+
+    async def test_finding_output_includes_narrative_fields(self):
+        self.queue(
+            {
+                "data": {
+                    "insert_finding_one": {
+                        "id": 7,
+                        "title": "T",
+                        "description": "D",
+                        "impact": "I",
+                        "mitigation": "M",
+                        "references": None,
+                        "cvssScore": 7.5,
+                    }
+                }
+            }
+        )
+        result = await main.create_ghostwriter_finding(
+            "T", "D", impact="I", mitigation="M", cvssScore=7.5
+        )
+        self.assertEqual(result["impact"], "I")
+        self.assertEqual(result["mitigation"], "M")
+        self.assertEqual(result["references"], "")
+        self.assertEqual(result["cvssScore"], 7.5)
+
+    async def test_client_output_includes_timezone(self):
+        self.queue(
+            {
+                "data": {
+                    "insert_client_one": {
+                        "id": 4,
+                        "name": "Acme",
+                        "codename": "ACME",
+                        "shortName": "AC",
+                        "timezone": "UTC",
+                    }
+                }
+            }
+        )
+        result = await main.create_ghostwriter_client("Acme", "AC", "ACME", timezone="UTC")
+        self.assertEqual(result["timezone"], "UTC")
 
 
 if __name__ == "__main__":

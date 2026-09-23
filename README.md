@@ -12,7 +12,9 @@ clients, projects, reports and findings for penetration testing engagements.
 - Search and retrieve clients, projects, reports, and findings
 - Create new clients, projects, reports, and findings
 - Attach findings from the library to reports
-- Update reported findings (replication steps, affected entities)
+- Tailor a report's copy of a finding without touching the shared library entry:
+  narrative fields, detection guidance, severity and CVSS re-rating, and position
+- Populate custom Extra Fields (JSONB) on clients, projects, and findings
 - Generate unique project codenames
 - **stdio** transport (default) for local MCP clients and **SSE** transport for HTTP-based clients
 
@@ -156,7 +158,7 @@ Add the following to your `claude_desktop_config.json`:
 | `create_ghostwriter_finding`    | write       | Add a finding to the library                     |
 | `attach_finding_to_report`      | write       | Attach a library finding to a report             |
 | `list_report_finding`           | read        | List all findings attached to a report           |
-| `update_report_finding`         | destructive | Update replication steps / affected entities     |
+| `update_report_finding`         | destructive | Edit a report's copy of a finding (text, rating, position) |
 | `explain_workflow`              | read        | Get a complete guide on the recommended workflow |
 
 The **kind** column mirrors the MCP tool annotations the server publishes
@@ -203,6 +205,16 @@ Start with `list_ghostwriter_lookups`: `projectTypeId`, `findingTypeId` and
 for, and returns a `reportedFindingId` — the report-specific copy of the finding.
 Pass that, not the library ID, to `update_report_finding`, which **replaces** the
 text rather than appending and errors out if no finding matches the ID.
+
+### Library findings vs report findings
+
+Attaching a library finding **copies** it into the report. `update_report_finding`
+edits that copy, so re-rating a finding or writing engagement-specific detail never
+changes the shared library entry. Beyond `replicationSteps` and `affectedEntities`
+it accepts `title`, `description`, `impact`, `mitigation`, `references`,
+`findingGuidance`, `hostDetectionTechniques`, `networkDetectionTechniques`,
+`severityId`, `findingTypeId`, `cvssScore`, `cvssVector`, `complete`, and
+`position`. Only the fields you pass are changed, and passing `""` clears one.
 
 > **Always search before creating** to avoid duplicates:
 >
