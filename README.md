@@ -207,13 +207,19 @@ If you only have a `reportId` and need to walk back up the hierarchy:
 
 ### Project Type IDs
 
-| ID  | Type       |
-| --- | ---------- |
-| 1   | Web App    |
-| 2   | Red Team   |
-| 3   | Mobile App |
-| 4   | Cloud      |
-| 5   | Internal   |
+Project type IDs are **deployment-specific** — the `projectType` table is populated
+when Ghostwriter is seeded, so query it (`query { projectType { id projectType } }`)
+rather than assuming fixed numbers. A stock install ships:
+
+| ID  | Type                        |
+| --- | --------------------------- |
+| 1   | Red Team                    |
+| 2   | Penetration Test            |
+| 3   | Phishing Assessment         |
+| 4   | Web Application Assessment  |
+
+Findings likewise reference the `findingType` and `findingSeverity` tables; query them
+the same way before passing `findingTypeId` / `severityId`.
 
 Environment variables
 

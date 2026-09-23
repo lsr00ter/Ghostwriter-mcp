@@ -123,6 +123,59 @@ class TestCreateTools(ToolTestCase):
         self.assertEqual(result["id"], 10)
         self.assertIn("clientId", result["_workflow_note"])
 
+    async def test_create_project_returns_camel_case_dates(self):
+        self.queue(
+            {
+                "data": {
+                    "insert_project_one": {
+                        "id": 11,
+                        "codename": "ACME",
+                        "startDate": "2026-01-01",
+                        "endDate": "2026-01-31",
+                    }
+                }
+            }
+        )
+        result = await main.create_ghostwriter_project(10, "ACME", 2)
+        # search_ghostwriter_projects also reports camelCase dates, so the two
+        # tools must not disagree about the shape of the same entity.
+        self.assertEqual(result["startDate"], "2026-01-01")
+        self.assertEqual(result["endDate"], "2026-01-31")
+
+    async def test_create_finding_accepts_every_optional_argument(self):
+        """The full MCP surface for this tool must stay callable.
+
+        A rename here once left the tool passing a keyword the API function did
+        not accept, which only surfaced in a live call.
+        """
+        self.queue(
+            {
+                "data": {
+                    "insert_finding_one": {
+                        "id": 12,
+                        "title": "SQLi",
+                        "description": "desc",
+                    }
+                }
+            }
+        )
+        result = await main.create_ghostwriter_finding(
+            "SQLi",
+            "desc",
+            findingTypeId=4,
+            severityId=2,
+            cvssScore=5.0,
+            cvssVector="CVSS:3.1/AV:N",
+            replication_steps="1. do a thing",
+            extraFields={"custom": 1},
+        )
+        self.assertEqual(result["id"], 12)
+        obj = json.loads(self.requests[0].content)["variables"]["object"]
+        self.assertEqual(obj["extraFields"], {"custom": 1})
+        self.assertEqual(obj["cvssScore"], 5.0)
+        self.assertEqual(obj["findingTypeId"], 4)
+        self.assertEqual(obj["severityId"], 2)
+
 
 class TestAttachTool(ToolTestCase):
     async def test_attach_by_title_searches_then_attaches(self):

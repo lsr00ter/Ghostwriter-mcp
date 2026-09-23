@@ -408,8 +408,10 @@ async def create_ghostwriter_client(
 
     Parameters:
     - 'clientId': from create_ghostwriter_client or search_ghostwriter_clients
-    - 'projectTypeId' is an integer (1-5), defaulting to GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID:
-       1 = Web App, 2 = Red Team, 3 = Mobile App, 4 = Cloud, 5 = Internal
+    - 'projectTypeId' defaults to GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID. IDs are
+      deployment-specific: query the `projectType` table to list them (a stock
+      install ships Red Team, Penetration Test, Phishing Assessment and
+      Web Application Assessment).
     - 'startDate' and 'endDate' are ISO dates (YYYY-MM-DD) and default to today
     """,
     annotations=WRITE,
@@ -432,8 +434,8 @@ async def create_ghostwriter_project(
         response = {
             "id": project["id"],
             "codename": project["codename"],
-            "start_date": project["startDate"],
-            "end_date": project["endDate"],
+            "startDate": project["startDate"],
+            "endDate": project["endDate"],
             "_workflow_note": "Save this 'id' as projectId for create_ghostwriter_report",
         }
 
@@ -515,7 +517,7 @@ async def create_ghostwriter_finding(
             cvssScore=cvssScore,
             cvssVector=cvssVector,
             replication_steps=replication_steps,
-            extraFields=extraFields,
+            extra_fields=extraFields,
         )
 
         if not result:
