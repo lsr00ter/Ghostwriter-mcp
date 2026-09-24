@@ -20,6 +20,14 @@ Everything starts with a client. You cannot create a project without a client, a
 report without a project, or attach a finding without a report. The tools return
 the id the next step needs, so hold onto each one.
 
+## Sibling skills
+
+This skill covers the data model and the MCP tools. Sibling skills cover the work around
+them: creating and reviewing the Word/PPTX templates a report is generated from, checking a
+report is ready to generate, and drafting an executive summary. Reach for those instead of
+reimplementing them here. They are installed alongside this one, so if you can read this file
+the others are in the same directory.
+
 ## Before you start
 
 Call `list_ghostwriter_lookups` first. It returns `projectTypes`, `findingTypes`,

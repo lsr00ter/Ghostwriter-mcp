@@ -71,6 +71,16 @@ Search before creating to avoid duplicates (search_ghostwriter_clients,
 search_ghostwriter_projects, search_ghostwriter_reports). Call explain_workflow
 for a full walkthrough, including how to trace an existing report back to its
 project and client.
+
+Deleting is permanent and cascades: removing a client takes its projects,
+reports and findings with it. Every delete tool requires confirmId to match the
+id being deleted, and they are safest run bottom-up (report findings, then
+reports, then projects, then clients). Never delete a row you did not create
+without asking the user first.
+
+If the ghostwriter agent skill is installed, read it before doing real work: it
+covers the platform model, the library-versus-report-copy rule, and the traps
+that silently produce wrong reports.
 """
 
 # MCP tool annotations. Read-only tools advertise readOnlyHint; write tools
@@ -1058,11 +1068,30 @@ async def explain_workflow() -> dict[str, Any]:
             "Save the 'id' field from each response to use in the next step",
             "You can mix search and create operations as needed",
             "Use search_ghostwriter_findings to find existing findings to attach",
+            "Delete bottom-up: a report finding, then its report, then the project, then the client",
         ],
         "common_scenarios": {
             "new_client_existing_project": "Search for project, if found use its clientId",
             "existing_client_new_project": "Search for client, use its ID to create project",
             "add_findings_to_existing_report": "Search for report, use its ID to attach findings",
+        },
+        "deleting": {
+            "order": "Bottom-up only: report findings, then reports, then projects, then clients",
+            "tools": [
+                "delete_ghostwriter_report_finding",
+                "delete_ghostwriter_report",
+                "delete_ghostwriter_project",
+                "delete_ghostwriter_client",
+                "delete_ghostwriter_finding",
+            ],
+            "confirmation": "Every delete tool requires confirmId to equal the id being deleted",
+            "cascade": (
+                "Deleting a parent removes its children, so a client takes its "
+                "projects, reports and findings with it"
+            ),
+            "caution": (
+                "Permanent. Do not delete a row you did not create without asking the user first"
+            ),
         },
     }
 

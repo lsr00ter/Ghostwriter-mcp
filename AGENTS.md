@@ -23,7 +23,8 @@ create and read clients, projects, reports, and findings.
 ./.venv/bin/ruff check .                           # lint
 ```
 
-Both must be clean before you commit. Target Python 3.10 — note that backslash
+Both must be clean before you commit. Neither needs the submodule checked out: ruff skips
+`vendor/`, and a clone without it only leaves the skill links dangling. Target Python 3.10 — note that backslash
 escapes inside f-string expressions are a syntax error before 3.12.
 
 Prefer the existing flat layout (`main.py` + `ghostwriter_api.py`): the Pi MCP

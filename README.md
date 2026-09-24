@@ -2,14 +2,16 @@
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that wraps
 [Ghostwriter's](https://github.com/GhostManager/Ghostwriter) GraphQL API and exposes
-tools that AI agents (Claude Desktop, VS Code Copilot, etc.) can call to manage
-clients, projects, reports and findings for penetration testing engagements.
+tools that AI agents can call to manage clients, projects, reports and findings
+for penetration testing engagements. Project-scoped MCP configs and agent skills
+ship in the repo for Claude Code, Codex, and Pi.
 
 ---
 
 ## Features
 
 - Search and retrieve clients, projects, reports, and findings
+- List the project types, finding types, and severities this deployment defines
 - Create new clients, projects, reports, and findings
 - Attach findings from the library to reports
 - Delete test or mistaken data, with a confirmation guard on every delete
@@ -125,6 +127,23 @@ Two project-local configs are checked in, so a client started from this director
 finds the server with no global setup. Both launch `.venv/bin/python main.py` with
 `cwd` set to the repo, which is what lets the server load `.env` from here.
 
+### Relative paths and other MCP hosts
+
+The commands in these two files are relative, which is what keeps them portable
+and free of machine-specific absolute paths. Claude Code resolves them against the
+project root and connects (verified with `claude mcp list`).
+
+Not every host does. The Pi MCP adapter spawns servers from its own working
+directory and does not apply `cwd` before resolving the command, so it fails with
+`spawn .venv/bin/python ENOENT`. It also merges project-local configs over your
+global ones, so a project entry can shadow an entry that works. If you hit that,
+give the server absolute paths in *your* global config instead of relying on the
+checked-in file — the relative form is still correct for the two clients below.
+
+A related trap: `${CLAUDE_PROJECT_DIR}` looks like the portable fix for this, but
+`.mcp.json` does not expand it. Claude Code reports `Missing environment variables:
+CLAUDE_PROJECT_DIR` and tries to spawn the literal path, so do not use it here.
+
 ### Claude Code
 
 `.mcp.json` is picked up automatically when you run `claude` in this directory.
@@ -148,8 +167,8 @@ CODEX_HOME="$PWD/.codex" codex mcp list   # verify
 Be aware of the trade-off: `CODEX_HOME` relocates *all* of Codex's state, not just
 the MCP list. Your `~/.codex` model settings, profiles, and login are not
 inherited, and `codex login` would write `auth.json` into this repo. `.gitignore`
-excludes everything under `.codex/` except `config.toml` so credentials cannot be
-committed, but if you would rather keep one Codex identity, register the server
+excludes everything under `.codex/` except `config.toml` and `skills/`, so credentials
+cannot be committed. If you would rather keep one Codex identity, register the server
 globally instead and skip `CODEX_HOME`:
 
 ```bash
@@ -189,6 +208,15 @@ Claude Desktop has no project scope, so it needs absolute paths in
   }
 }
 ```
+
+### Skills and repo guidance
+
+The configs above expose the *tools*. The repo also ships skills that tell an agent how to use
+them — this repo's own, plus SpecterOps' upstream collection — linked into `.agents/skills/`,
+`.claude/skills/`, `.codex/skills/`, and `.pi/skills/` so each client finds them from this
+directory. See [Where agents find the skills](#where-agents-find-the-skills). `AGENTS.md` at
+the repo root carries the same ground rules in the form coding agents expect, and is what
+Codex reads in this project.
 
 ---
 
@@ -466,6 +494,19 @@ Layout:
   `reportedFinding.replication_steps`). The schema-conformance tests assert every payload key
   is a real field, so a typo fails in CI instead of at runtime. Regenerate it against the
   target instance whenever you upgrade Ghostwriter (see `tests/` for the generator pattern).
+- `skills/ghostwriter/` — this repo's agent skill, covering the data model and the tools.
+- `vendor/ghostwriter-skills/` — SpecterOps' upstream skills collection, vendored as a pinned
+  git submodule. Nothing under it is ever edited here.
+- `scripts/sync-skills.sh` — keeps that submodule current and rebuilds the skill links.
+- `.agents/skills/`, `.claude/skills/`, `.codex/skills/`, `.pi/skills/` — generated links to
+  both skill sources, one directory per agent convention.
+- `AGENTS.md` — repo guidance for coding agents.
+
+`ruff` skips `vendor/` (`extend-exclude` in `pyproject.toml`) rather than restyling upstream
+code, so an upstream bump can never conflict with a local lint fix. Neither the tests nor the
+lint need the submodule checked out: a clone without it merely leaves the skill links
+dangling, which is exactly the state CI runs in, since `actions/checkout` does not fetch
+submodules.
 
 ---
 
