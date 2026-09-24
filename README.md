@@ -198,8 +198,7 @@ Claude Desktop has no project scope, so it needs absolute paths in
 the Ghostwriter platform behind it: the client -> project -> report -> finding
 hierarchy, the library-versus-report-copy rule, the fact that rich text fields are
 rendered through Jinja2, delete cascades, and which parts of Ghostwriter these
-tools deliberately do not cover. `.claude/skills/ghostwriter` symlinks to it so
-Claude Code discovers it in this project; point other agents at the file directly.
+tools deliberately do not cover.
 
 It lives in the repo so it versions alongside the tools it documents.
 
@@ -214,12 +213,33 @@ Word/PPTX and report-QA work around them.
 
 It is vendored as a git submodule at `vendor/ghostwriter-skills`, pinned to a
 reviewed commit, so the upstream tree is never edited here and updates stay an
-explicit, reviewable bump. `.claude/skills/<name>` symlinks each upstream skill in
-so Claude Code discovers them next to the local one.
+explicit, reviewable bump.
 
 The submodule is the reason `vendor/` holds a pinned commit rather than a copy:
 those skills ship executable helpers under `scripts/`, so the commit you review is
 the code an agent may run.
+
+### Where agents find the skills
+
+Both skill sets are symlinked into every project-local discovery directory, so
+Claude Code, Codex, Pi, and anything else reading the shared convention all see
+them:
+
+| Directory | Read by |
+| --- | --- |
+| `.agents/skills/` | the shared, cross-agent location |
+| `.claude/skills/` | Claude Code |
+| `.codex/skills/` | Codex |
+| `.pi/skills/` | Pi |
+
+The links are generated, not hand-written. `./scripts/sync-skills.sh link`
+rebuilds them and prunes links whose skill no longer exists; it only manages links
+pointing at the skill sources, so links you add yourself are left alone. Links are
+committed, so they work on a plain clone once the submodule is initialised.
+
+`AGENTS.md` at the repo root covers the rest for coding agents: how to run the
+tests, the safety rules for touching a live instance, and why `vendor/` is not to
+be edited.
 
 ```bash
 git clone --recursive <this repo>      # submodule comes along

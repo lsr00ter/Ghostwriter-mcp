@@ -66,9 +66,10 @@ env/
 .pi/mcp-traces/
 
 # Codex writes credentials (auth.json) and runtime state next to whichever config
-# it is pointed at, so track only the checked-in MCP config.
+# it is pointed at, so track only the checked-in MCP config and the skill links.
 .codex/*
 !.codex/config.toml
+!.codex/skills/
 
 # Claude Code per-user overrides of the shared .mcp.json
 .claude/settings.local.json
