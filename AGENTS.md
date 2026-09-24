@@ -4,82 +4,62 @@ Instructions for coding agents working in this repository.
 
 ## What this is
 
-A stdio MCP server that exposes a slice of Ghostwriter (SpecterOps' engagement
-management and reporting platform) through its GraphQL/Hasura API, so an agent can
-create and read clients, projects, reports, and findings.
+A stdio MCP server exposing a slice of Ghostwriter through its GraphQL/Hasura API.
+`main.py` holds the tool definitions and `ghostwriter_api.py` the GraphQL client;
+each tool's docstring is its user-facing documentation. Keep that flat layout — the
+checked-in MCP configs point at those two module paths.
 
-- `main.py` — the MCP tool surface. Tool docstrings are the user-facing
-  documentation for each tool.
-- `ghostwriter_api.py` — the GraphQL client. All requests go through it.
-- `tests/` — `unittest` with mocked HTTP. They must pass with no network and no
-  live Ghostwriter.
-- `.env` — connection settings and a **live API token** (gitignored). Never print
-  its contents, never commit it, and never read the token into output.
+`.env` holds a live API token. Never print it and never commit it.
 
-## Working on this repo
+## Before you commit
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests   # tests
 ./.venv/bin/ruff check .                           # lint
 ```
 
-Both must be clean before you commit. Neither needs the submodule checked out: ruff skips
-`vendor/`, and a clone without it only leaves the skill links dangling. Target Python 3.10 — note that backslash
-escapes inside f-string expressions are a syntax error before 3.12.
+Both must be clean. Neither needs the submodule checked out.
 
-Prefer the existing flat layout (`main.py` + `ghostwriter_api.py`): the Pi MCP
-config points at those module paths, so a package restructure breaks it.
+Target Python 3.10: backslash escapes inside f-string expressions are a syntax error
+before 3.12.
 
-Match the **live** schema, not the upstream `DOCS/schema.graphql`, which drifts.
-Naming in the live instance is genuinely inconsistent (`cvssScore` and
-`extraFields` are camelCase; `replication_steps` and `last_update` are snake_case).
-Verify a field exists before relying on it.
+Match the **live** schema, not the upstream `DOCS/schema.graphql`, which drifts —
+the live instance mixes casing (`cvssScore` and `extraFields` are camelCase;
+`replication_steps` and `last_update` are snake_case). Verify a field exists before
+relying on it.
 
 ## Skills
 
-Two sets, both linked into every project-local discovery directory:
+`skills/ghostwriter/SKILL.md` is the authority on the platform model and on using
+the tools; read it before touching the live instance. The sibling skills in
+`vendor/ghostwriter-skills/` cover templates, report readiness, and executive
+summaries.
 
-- `skills/ghostwriter/SKILL.md` — this repo's own skill: the data model, the
-  library-versus-report-copy rule, the MCP tools, and the platform traps.
-- `vendor/ghostwriter-skills/` — SpecterOps' upstream collection (template
-  creation and review, report readiness, executive summary), vendored as a git
-  submodule. **Never edit files under `vendor/`**; it must stay pristine so
-  upstream bumps do not conflict. It is excluded from ruff for that reason.
+Never edit anything under `vendor/` — it is a pinned git submodule and must stay
+pristine so an upstream bump cannot conflict. It is excluded from ruff for that
+reason. Never hand-manage the skill links either: `./scripts/sync-skills.sh` owns
+them and prunes stale ones. The README documents the discovery directories.
 
-`.agents/skills/`, `.claude/skills/`, `.codex/skills/`, and `.pi/skills/` hold
-symlinks to those sources. They are generated, not hand-written:
+## Where facts live
 
-```bash
-./scripts/sync-skills.sh          # pinned commit vs upstream main
-./scripts/sync-skills.sh init     # after a clone without --recursive
-./scripts/sync-skills.sh preview  # incoming upstream commits
-./scripts/sync-skills.sh update   # bump the submodule and relink
-```
+These docs were deduplicated on purpose: each fact has one home and the others point
+at it. Keep it that way.
 
-Do not add or remove skill links by hand — `link` owns them and will prune links
-pointing into the skill sources whose skill no longer exists. Links to skills you
-add yourself elsewhere in those directories are left alone.
+| Fact | Home |
+| ----- | ---- |
+| What the tools mean and how the platform behaves | `skills/ghostwriter/SKILL.md` |
+| Install, configuration, connecting a client, repo layout | `README.md` |
+| Rules for changing this repository | this file |
+| Always-on safety and the workflow, at runtime | `main.py`'s `SERVER_INSTRUCTIONS` and `explain_workflow` |
 
-## Connecting an MCP client
+The skill ships on its own, so it states platform behaviour in full on purpose. This
+file is always read next to the README, so prefer a pointer over a paraphrase.
 
-- Claude Code: `.mcp.json` (project scope, picked up automatically).
-- Codex: `.codex/config.toml`. Codex has no project-local discovery, so run it as
-  `CODEX_HOME="$PWD/.codex" codex`. `codex mcp add` cannot record `cwd`, which is
-  what makes `python-dotenv` find `.env` — it must be set in the TOML.
+## Using the tools against the live instance
 
-## Safety rules when using the tools
+These tools talk to a real Ghostwriter.
 
-These tools talk to a real Ghostwriter instance.
-
-- **Do not delete anything you did not create** without asking the user first.
-  Deletes are permanent, take a `confirmId`, and cascade (a client takes its
-  projects, reports, and findings with it).
+- Never delete a row you did not create without asking the user first: deletion is
+  permanent.
 - Anything created for testing must be obvious and disposable: prefix names with
   `ZZ MCP ... (safe to delete)` and use a short name like `ZZTEST`.
-- `list_ghostwriter_lookups` first. Lookup ids (`projectTypeId`, `severityId`,
-  `findingTypeId`) are seeded per deployment, so they cannot be hardcoded.
-- Rich text fields are rendered through Jinja2 at report generation. Literal
-  `{{ }}` must be escaped, or the document will not generate — this matters most
-  for template-injection findings.
-- Attaching a library finding **copies** it. Edit the copy for engagement work;
-  editing the library entry changes every report that uses it.

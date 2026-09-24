@@ -15,7 +15,7 @@ ship in the repo for Claude Code, Codex, and Pi.
 - Create new clients, projects, reports, and findings
 - Attach findings from the library to reports
 - Delete test or mistaken data, with a confirmation guard on every delete
-- Tailor a report's copy of a finding without touching the shared library entry:
+- Tailor one report's version of a finding without touching the shared library entry:
   narrative fields, detection guidance, severity and CVSS re-rating, and position
 - Populate custom Extra Fields (JSONB) on clients, projects, and findings
 - Generate unique project codenames
@@ -36,7 +36,7 @@ ship in the repo for Claude Code, Codex, and Pi.
 ```bash
 # Runtime only
 git clone <repo-url>
-cd copilot-try-ghostwriter
+cd Ghostwriter-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -83,11 +83,12 @@ GHOSTWRITER_PAGINATION_LIMIT=50
 | `GHOSTWRITER_TLS_INSECURE`            | ❌       | `0`     | Disable TLS verification (last resort, insecure)  |
 
 > **TLS Note:** Certificate verification is enabled by default. If Ghostwriter uses a
-> self-signed certificate, add the CA to your system trust store (recommended). If the
-> certificate cannot pass hostname checks (for example a bare IP with no
-> `subjectAltName`), set `GHOSTWRITER_TLS_INSECURE=1` as an escape hatch: traffic stays
-> encrypted but the server is no longer authenticated, so a man-in-the-middle cannot be
-> detected. A warning is logged on every client start.
+> self-signed certificate, add its CA to your system trust store, or serve it from a
+> hostname covered by the certificate's `subjectAltName` — a certificate with no SAN at
+> all cannot pass verification for a bare IP. Only when neither is possible, set
+> `GHOSTWRITER_TLS_INSECURE=1` as an escape hatch: traffic stays encrypted but the server
+> is no longer authenticated, so a man-in-the-middle cannot be detected, and a warning is
+> logged on every client start. Leave it unset in normal use.
 
 ---
 
@@ -365,13 +366,10 @@ text rather than appending and errors out if no finding matches the ID.
 
 ### Library findings vs report findings
 
-Attaching a library finding **copies** it into the report. `update_report_finding`
-edits that copy, so re-rating a finding or writing engagement-specific detail never
-changes the shared library entry. Beyond `replicationSteps` and `affectedEntities`
-it accepts `title`, `description`, `impact`, `mitigation`, `references`,
-`findingGuidance`, `hostDetectionTechniques`, `networkDetectionTechniques`,
-`severityId`, `findingTypeId`, `cvssScore`, `cvssVector`, `complete`, and
-`position`. Only the fields you pass are changed, and passing `""` clears one.
+Attaching a library finding **copies** it into the report, so engagement-specific
+edits never change the shared entry — they affect only that report.
+`update_report_finding` takes the whole set of narrative, rating and position
+fields; only the ones you pass are changed, and `""` clears one.
 
 ### Deleting data
 
@@ -385,14 +383,10 @@ delete_ghostwriter_client(clientId=6)                # refused
 delete_ghostwriter_client(clientId=6, confirmId=7)   # refused
 ```
 
-Each tool deletes one row by primary key and returns the row it removed, so you
-can confirm afterwards what went. Deleting a nonexistent id is an error rather
-than a silent success.
+Each tool deletes one row by primary key and returns the row it removed, and
+deleting a nonexistent id is an error rather than a silent success.
 
-Mind the cascades: deleting a client removes its projects, their reports, and
-those reports' findings. To clean up a set of test data predictably, work bottom
-up - report findings, then reports, then projects, then clients, then library
-entries. Deleting a report finding only removes the report's copy, leaving the
+Deletions cascade, so clean up bottom-up. Deleting a report finding leaves the
 library entry available to attach again.
 
 > **Always search before creating** to avoid duplicates:
@@ -403,18 +397,13 @@ library entry available to attach again.
 
 ### Traceback (starting from a known report)
 
-If you only have a `reportId` and need to walk back up the hierarchy:
+With only a `reportId`: `get_ghostwriter_report_by_id` → `projectId`,
+`get_ghostwriter_project_by_id` → `clientId`, `get_ghostwriter_client_by_id` → the
+client. `explain_workflow` returns the same chain.
 
-1. `get_ghostwriter_report_by_id` → returns `projectId`
-2. `get_ghostwriter_project_by_id` → returns `clientId`
-3. `get_ghostwriter_client_by_id` → returns full client details
+### Lookup IDs
 
-### Project Type IDs
-
-Project type IDs are **deployment-specific** — the `projectType` table is populated
-when Ghostwriter is seeded, so call `list_ghostwriter_lookups` (or query
-`query { projectType { id projectType } }`) rather than assuming fixed numbers.
-A stock install ships:
+A stock install ships these project types:
 
 | ID  | Type                        |
 | --- | --------------------------- |
@@ -423,40 +412,13 @@ A stock install ships:
 | 3   | Phishing Assessment         |
 | 4   | Web Application Assessment  |
 
-Findings likewise reference the `findingType` and `findingSeverity` tables;
-`list_ghostwriter_lookups` returns all three in one call, so use it before passing
-`findingTypeId` / `severityId`.
-
-Environment variables
-
-- `GHOSTWRITER_GRAPHQL_URL` (or `GHOSTWRITER_URL`): URL to Ghostwriter GraphQL endpoint (e.g. `https://ghostwriter.example.local/v1/graphql`). Required.
-- `GHOSTWRITER_API_TOKEN`: Bearer token to authenticate with Ghostwriter. Optional but recommended.
-- `GHOSTWRITER_REQUEST_TIMEOUT`: Request timeout in seconds (default 10).
-- `GHOSTWRITER_DEFAULT_PROJECT_TYPE_ID`: Optional default project type id used by helpers.
-- `GHOSTWRITER_DEFAULT_SEVERITY_ID`: Optional default severity id for creating findings.
-- `GHOSTWRITER_PAGINATION_LIMIT`: Default pagination limit for list queries (default 50).
-- `GHOSTWRITER_TLS_INSECURE`: Set to `1` to disable TLS certificate verification (default off).
-
-TLS certificate verification is enabled by default. If you run Ghostwriter behind a
-self-signed certificate, add its CA to your system trust store, or serve it from a
-hostname covered by the certificate's `subjectAltName` (a certificate with no SAN at all
-cannot pass verification for an IP address). Only when neither is possible, set
-`GHOSTWRITER_TLS_INSECURE=1`: the connection stays encrypted, but the server is not
-authenticated, and a warning is logged on every client start. Leave it unset in normal use.
-
 How to run
 
-1. Create a virtualenv and install dependencies (add `httpx2`, `python-dotenv` etc. to the requirements):
+1. Install dependencies ([Installation](#installation)).
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+2. Populate a `.env` file with `GHOSTWRITER_GRAPHQL_URL` and `GHOSTWRITER_API_TOKEN`.
 
-1. Populate a `.env` file with `GHOSTWRITER_GRAPHQL_URL` and `GHOSTWRITER_API_TOKEN`.
-
-2. Start the MCP server (the CLI entry point is in `main.py`):
+3. Start the MCP server (the CLI entry point is in `main.py`):
 
 ```bash
 python main.py

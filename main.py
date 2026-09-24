@@ -73,10 +73,9 @@ for a full walkthrough, including how to trace an existing report back to its
 project and client.
 
 Deleting is permanent and cascades: removing a client takes its projects,
-reports and findings with it. Every delete tool requires confirmId to match the
-id being deleted, and they are safest run bottom-up (report findings, then
-reports, then projects, then clients). Never delete a row you did not create
-without asking the user first.
+reports and findings with it. Every delete tool requires confirmId to equal the
+id being deleted, and they are safest run bottom-up - explain_workflow gives the
+order. Never delete a row you did not create without asking the user first.
 
 If the ghostwriter agent skill is installed, read it before doing real work: it
 covers the platform model, the library-versus-report-copy rule, and the traps
@@ -1084,14 +1083,8 @@ async def explain_workflow() -> dict[str, Any]:
                 "delete_ghostwriter_client",
                 "delete_ghostwriter_finding",
             ],
-            "confirmation": "Every delete tool requires confirmId to equal the id being deleted",
-            "cascade": (
-                "Deleting a parent removes its children, so a client takes its "
-                "projects, reports and findings with it"
-            ),
-            "caution": (
-                "Permanent. Do not delete a row you did not create without asking the user first"
-            ),
+            # The confirmId requirement and the cascade warning are stated once, in
+            # SERVER_INSTRUCTIONS, which every client receives on connect.
         },
     }
 
