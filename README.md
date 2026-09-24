@@ -203,6 +203,44 @@ Claude Code discovers it in this project; point other agents at the file directl
 
 It lives in the repo so it versions alongside the tools it documents.
 
+### Upstream Ghostwriter skills
+
+SpecterOps publishes its own portable Agent Skills collection
+([`GhostManager/ghostwriter-skills`](https://github.com/GhostManager/ghostwriter-skills))
+covering template creation, template review, report readiness, and drafting an
+executive summary. Those complement the skill above rather than duplicate it: this
+repo's skill covers the data model and the MCP tools, upstream's cover the
+Word/PPTX and report-QA work around them.
+
+It is vendored as a git submodule at `vendor/ghostwriter-skills`, pinned to a
+reviewed commit, so the upstream tree is never edited here and updates stay an
+explicit, reviewable bump. `.claude/skills/<name>` symlinks each upstream skill in
+so Claude Code discovers them next to the local one.
+
+The submodule is the reason `vendor/` holds a pinned commit rather than a copy:
+those skills ship executable helpers under `scripts/`, so the commit you review is
+the code an agent may run.
+
+```bash
+git clone --recursive <this repo>      # submodule comes along
+git submodule update --init            # or fetch it after a plain clone
+
+./scripts/sync-skills.sh               # pinned commit vs upstream main
+./scripts/sync-skills.sh preview       # incoming upstream commits + changed files
+./scripts/sync-skills.sh update        # move to upstream main and relink
+./scripts/sync-skills.sh validate      # run upstream's validation and fixture tests
+```
+
+`update` refuses to run on a dirty tree so the version bump is always its own
+commit, and `preview` calls out changes to executable files specifically. Upstream
+has no release tags yet, so the submodule tracks `main` and the recorded commit is
+the version. There is no `git subtree` alternative in these instructions because
+Apple's git does not ship `git subtree`.
+
+If you would rather install the upstream collection globally instead of vendoring
+it, upstream's own path is `npx skills add GhostManager/ghostwriter-skills` — but
+that writes to your agent directories, not into this repo.
+
 ---
 
 ## Available Tools

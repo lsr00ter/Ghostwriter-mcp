@@ -1,0 +1,4 @@
+[submodule "vendor/ghostwriter-skills"]
+	path = vendor/ghostwriter-skills
+	url = https://github.com/GhostManager/ghostwriter-skills.git
+	branch = main

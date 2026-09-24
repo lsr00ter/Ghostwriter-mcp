@@ -40,6 +40,9 @@ py-modules = ["main", "ghostwriter_api"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Vendored upstream skills are not ours to restyle, and editing them would make
+# every submodule bump conflict. They are covered by upstream's own validation.
+extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
